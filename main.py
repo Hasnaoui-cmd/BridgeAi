@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore")
 
 # --- THE ONLY AI IMPORT YOU NEED ---
 from orchestrator import run_orchestrator
+from routers import auth
 
 # 1. Load Environment Variables
 load_dotenv()
@@ -19,9 +20,12 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 app = FastAPI(title="AutoTrade-Comply API")
+
+app.include_router(auth.router)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"], 
+    allow_origins=["http://localhost:4200", "http://127.0.0.1:4200"], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,6 +64,43 @@ async def get_history_endpoint(session_id: str):
     try:
         messages = get_session_history(session_id)
         return {"messages": messages}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/sessions/{user_id}")
+async def get_recent_sessions_endpoint(user_id: str):
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor(row_factory=dict_row) as cur:
+                cur.execute("""
+                    WITH RankedMessages AS (
+                        SELECT session_id, content, created_at,
+                               ROW_NUMBER() OVER(PARTITION BY session_id ORDER BY created_at ASC) as rn
+                        FROM chat_history
+                        WHERE session_id LIKE %s AND role = 'user'
+                    )
+                    SELECT session_id as id, content as title
+                    FROM RankedMessages
+                    WHERE rn = 1
+                    ORDER BY created_at DESC
+                    LIMIT 5
+                """, (f"{user_id}___%",))
+                records = cur.fetchall()
+                for r in records:
+                    t = r['title']
+                    if t.startswith('🎤 '): t = t[2:]
+                    if len(t) > 25: r['title'] = t[:25] + '...'
+                return {"sessions": records}
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.delete("/history/{session_id}")
+async def clear_history_endpoint(session_id: str):
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chat_history WHERE session_id = %s", (session_id,))
+        return {"success": True}
     except Exception as e:
         return {"error": str(e)}
 

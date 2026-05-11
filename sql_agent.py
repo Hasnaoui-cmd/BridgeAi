@@ -17,7 +17,7 @@ print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
 # 2. Connect to the Database
 # We explicitly hide the "documents" and vector tables from the SQL agent!
 db = SQLDatabase.from_uri(
-    DATABASE_URL,
+    DATABASE_URL.replace("postgresql://", "postgresql+psycopg://"),
     ignore_tables=["documents", "langchain_pg_collection", "langchain_pg_embedding"] 
 )
 

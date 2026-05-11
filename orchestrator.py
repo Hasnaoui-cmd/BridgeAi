@@ -22,7 +22,7 @@ llm = ChatGroq(temperature=0, model_name="llama-3.1-8b-instant", api_key=GROQ_AP
 
 # 3. The Orchestrator's Brain
 router_prompt = PromptTemplate.from_template(
-    """You are the Master Orchestrator for an Enterprise Trade Compliance AI. 
+    """You are the Master Orchestrator for an Enterprise  Bridge  AI. 
     Analyze the user's question and decide which specialized database it needs.
     
     RULES:

@@ -1,0 +1,6 @@
+{
+  "name": "BridgeAI",
+  "description": "Intelligent customs compliance and logistics platform.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": []
+}
