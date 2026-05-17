@@ -1,70 +1,81 @@
-import { AlertTriangle, TrendingUp, Info } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom'; // Import Link
+import { supabase } from '../lib/supabase';
+import { AlertTriangle, CheckCircle, Info, MessageSquare, ChevronRight } from 'lucide-react';
 
 export default function Risk() {
-  const riskScore = 72; // Out of 100
-  const circumference = 2 * Math.PI * 45;
-  const strokeDashoffset = circumference - (riskScore / 100) * circumference;
+  const [screenings, setScreenings] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const factors = [
-    { icon: AlertTriangle, title: 'Declared Value Anomaly', desc: 'The declared value per kg is 42% lower than historical averages for HS 8544.30 on this lane.', impact: 'High' },
-    { icon: TrendingUp, title: 'Inspection Rate Spike', desc: 'Algeciras port has increased systematic physical inspections for electronics by 18% this week.', impact: 'Medium' },
-    { icon: Info, title: 'New Exporter Entity', desc: 'The supplier TIN was registered less than 6 months ago, triggering automated EUR.1 scrutiny.', impact: 'Medium' },
-  ];
+  useEffect(() => {
+    const fetchScreenings = async () => {
+      // Fetching including the new session_id column
+      const { data, error } = await supabase
+        .from('compliance_screenings')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (!error) setScreenings(data || []);
+      setLoading(false);
+    };
+    fetchScreenings();
+  }, []);
 
   return (
-    <div className="h-full p-8 max-w-4xl mx-auto overflow-y-auto">
-      <div className="mb-8 pl-4">
-        <h2 className="text-2xl font-serif text-stone-800">Risk Assessment</h2>
-        <p className="text-stone-500 mt-1">AI Customs Blockage Prediction</p>
+    <div className="p-8 max-w-6xl mx-auto h-full overflow-y-auto">
+      <div className="mb-8">
+        <h2 className="text-2xl font-serif text-stone-800">Compliance Risk Engine</h2>
+        <p className="text-stone-500 text-sm">AI-detected anomalies in trade documentation</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-        <div className="col-span-1 bg-white rounded-3xl p-8 border border-stone-200 shadow-sm flex flex-col items-center justify-center">
-          <div className="relative w-48 h-48 mb-6">
-            <svg className="w-full h-full transform -rotate-90" viewBox="0 0 100 100">
-              <circle cx="50" cy="50" r="45" className="stroke-stone-100" strokeWidth="8" fill="none" />
-              <circle 
-                cx="50" cy="50" r="45" 
-                className="stroke-amber-400 transition-all duration-1000 ease-out" 
-                strokeWidth="8" fill="none" strokeLinecap="round"
-                strokeDasharray={circumference}
-                strokeDashoffset={strokeDashoffset}
-              />
-            </svg>
-            <div className="absolute inset-0 flex flex-col items-center justify-center bg-transparent rounded-full">
-              <span className="text-5xl font-light text-stone-800 tracking-tight">{riskScore}</span>
-              <span className="text-sm font-medium text-stone-400 mt-1 uppercase tracking-widest">Score</span>
+      <div className="grid gap-4">
+        {screenings.map((s) => (
+          <div key={s.id} className="bg-white p-6 rounded-3xl border border-stone-200 shadow-sm hover:shadow-md transition-all flex items-start space-x-5 group">
+            {/* Status Icon */}
+            <div className={`p-3 rounded-2xl flex-shrink-0 ${s.status === 'High Risk' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
+              {s.status === 'High Risk' ? <AlertTriangle size={24} /> : <CheckCircle size={24} />}
             </div>
-          </div>
-          <div className="text-center">
-            <div className="inline-flex items-center space-x-2 bg-amber-50 text-amber-700 px-3 py-1.5 rounded-lg text-sm font-medium">
-              <AlertTriangle size={16} />
-              <span>Elevated Risk</span>
-            </div>
-          </div>
-        </div>
 
-        <div className="col-span-2 space-y-4">
-          <h3 className="font-medium text-stone-800 pl-2 mb-2">SHAP Risk Factors</h3>
-          {factors.map((factor, i) => (
-            <div key={i} className="bg-white p-5 rounded-2xl border border-stone-200 shadow-sm flex items-start space-x-4">
-              <div className={`mt-0.5 p-2 rounded-xl ${factor.impact === 'High' ? 'bg-amber-100 text-amber-600' : 'bg-stone-100 text-stone-600'}`}>
-                <factor.icon size={18} />
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center justify-between mb-1">
-                  <h4 className="font-medium text-stone-800">{factor.title}</h4>
-                  <span className="text-xs font-mono text-stone-400 bg-stone-50 px-2 py-0.5 rounded">Impact: {factor.impact}</span>
+            {/* Content */}
+            <div className="flex-1 min-w-0">
+              <div className="flex justify-between items-start mb-2">
+                <div>
+                  <h4 className="font-bold text-stone-800 text-lg">{s.screening_type}</h4>
+                  <span className="text-xs text-stone-400 font-mono">
+                    ID: {s.id.substring(0, 8)} • {new Date(s.created_at).toLocaleString()}
+                  </span>
                 </div>
-                <p className="text-sm text-stone-500 leading-relaxed">{factor.desc}</p>
+                <span className={`text-[10px] px-2.5 py-1 rounded-full font-black uppercase tracking-wider ${s.status === 'High Risk' ? 'text-red-700 bg-red-100/50' : 'text-green-700 bg-green-100/50'}`}>
+                  {s.status}
+                </span>
               </div>
+
+              <p className="text-sm text-stone-600 leading-relaxed line-clamp-2 mb-4 italic">
+                "{s.ai_analysis_notes}"
+              </p>
+
+              {/* ACTION: The Deep Link */}
+              {s.session_id && (
+                <Link
+                  to={`/assistant/${s.session_id}`}
+                  className="inline-flex items-center space-x-2 text-amber-700 bg-amber-50 hover:bg-amber-100 px-4 py-2 rounded-xl text-sm font-medium transition-colors group-hover:translate-x-1 duration-300"
+                >
+                  <MessageSquare size={16} />
+                  <span>View Full Audit Conversation</span>
+                  <ChevronRight size={14} />
+                </Link>
+              )}
             </div>
-          ))}
-          
-          <button className="w-full mt-4 bg-stone-800 text-white rounded-xl py-3.5 font-medium hover:bg-stone-700 transition-colors shadow-sm">
-            Generate Remediation Plan
-          </button>
-        </div>
+          </div>
+        ))}
+
+        {screenings.length === 0 && !loading && (
+          <div className="text-center py-20 bg-stone-50 rounded-3xl border border-dashed border-stone-200">
+            <Info className="mx-auto mb-4 text-stone-300" size={48} />
+            <p className="text-stone-500">No screening data detected yet.</p>
+            <p className="text-stone-400 text-sm mt-1">Upload an invoice in the Assistant to trigger an audit.</p>
+          </div>
+        )}
       </div>
     </div>
   );
