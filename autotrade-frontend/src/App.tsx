@@ -12,6 +12,27 @@ import Risk from './components/Risk';
 import Settings from './components/Settings';
 import Login from './components/Login';
 import SignUp from './components/SignUp';
+import AdminDashboard from './components/AdminDashboard';
+import { useAuth } from './lib/auth';
+
+// Protected route wrapper — redirects non-admins to /assistant
+function AdminRoute({ children }: { children: React.ReactNode }) {
+  const { isAdmin, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full text-stone-400">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!isAdmin) {
+    return <Navigate to="/assistant" replace />;
+  }
+
+  return <>{children}</>;
+}
 
 export default function App() {
   return (
@@ -27,6 +48,14 @@ export default function App() {
           <Route path="routes" element={<RoutesPage />} />
           <Route path="risks" element={<Risk />} />
           <Route path="settings" element={<Settings />} />
+          <Route
+            path="admin"
+            element={
+              <AdminRoute>
+                <AdminDashboard />
+              </AdminRoute>
+            }
+          />
         </Route>
       </Routes>
     </BrowserRouter>

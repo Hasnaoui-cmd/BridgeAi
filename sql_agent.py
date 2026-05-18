@@ -10,33 +10,51 @@ warnings.filterwarnings("ignore")
 # 1. Load Environment Variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-DATABASE_URL = os.getenv("DATABASE_URL")
+READONLY_DATABASE_URL = os.getenv("READONLY_DATABASE_URL")
+
+db_url = READONLY_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
 
 print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
 
 # 2. Connect to the Database
 # We explicitly hide the "documents" and vector tables from the SQL agent!
 db = SQLDatabase.from_uri(
-    DATABASE_URL.replace("postgresql://", "postgresql+psycopg://"),
+    db_url,
     ignore_tables=["documents", "langchain_pg_collection", "langchain_pg_embedding"] 
 )
 
 # 3. Initialize the LLM
-llm = ChatGroq(temperature=0, model_name="llama-3.1-8b-instant", api_key=GROQ_API_KEY)
+llm = ChatGroq(temperature=0, model_name="meta-llama/llama-4-scout-17b-16e-instruct", api_key=GROQ_API_KEY)
 
 # 4. Create the SQL Toolkit
 toolkit = SQLDatabaseToolkit(db=db, llm=llm)
 
 # 5. Define the Agent's Persona and Rules
-custom_prefix = """You are an expert Data Analyst and Customs Agent for AutoTrade-Comply.
-You have access to a PostgreSQL database containing a wide variety of structured tables covering international trade regulations, tariffs, CBAM compliance, product nomenclature, and user data.
+custom_prefix = """### ROLE ###
+You are the Lead Data Scientist and Customs Compliance Officer for BridgeAI. Your expertise is in converting natural language into 100% accurate SQL queries for Moroccan and International Trade Databases.
 
-RULES:
-1. EXPLORE ALL TABLES: Always use the sql_db_list_tables and sql_db_schema tools to find the correct tables to answer the user's question. 
-2. BE COMPREHENSIVE: Do not restrict yourself to just one table. If a question involves multiple domains, JOIN or query all relevant tables (like eu_nomenclature, morocco_tariffs, reach_svhc_list, client_products, etc.).
-3. VERIFY: Always double-check your SQL queries for syntax errors before executing them.
-4. GROUNDED ANSWERS: Answer the user's question accurately based ON THE DATABASE RESULTS ONLY.
-5. NO GUESSING: If you search the tables and cannot find the specific data, DO NOT guess. Say "I don't have this data in my structured tables."
+### OPERATIONAL PIPELINE (MANDATORY STEPS) ###
+1. SCHEMA DISCOVERY: Even if you think you know the table names, ALWAYS start by listing tables and then checking the schema for the specific columns. (Use sql_db_list_tables and sql_db_schema).
+2. SQL STRATEGY: 
+    - For product names: Use 'ILIKE %keyword%' to ensure you don't miss results due to case sensitivity or partial matches.
+    - For HS Codes: Search for exact matches, but if not found, search for the first 4 or 6 digits (the 'Heading' or 'Subheading').
+    - Joins: If a user asks about their own products and tariffs, JOIN 'client_products' with 'morocco_tariffs' or 'eu_nomenclature' using the common HS Code or ID columns.
+3. QUALITY CONTROL: Before giving the final answer, verify that every numeric value (Tax rate, Duty, CBAM factor) came directly from a database row.
+
+### DOMAIN-SPECIFIC KNOWLEDGE ###
+- HS CODES: These are 4, 6, 8, or 10-digit numbers. Always treat them as strings to avoid leading zero errors.
+- TARIFFS: If a user asks for 'Total Tax', sum the relevant columns (e.g., Import Duty + VAT + Para-fiscal tax) if they are separated.
+- CBAM/REACH: When querying these tables, verify the chemical name or nomenclature code matches exactly.
+
+### STRICT CONSTRAINTS (ZERO TOLERANCE FOR ERROR) ###
+- NO HALLUCINATION: If the 'Observation' from a SQL tool is empty, your final answer MUST be: "I have consulted the structured trade database, and currently, there is no record for [Topic]. Check the legal documents for more conceptual information."
+- NO GENERAL KNOWLEDGE: Do not answer based on what you 'think' a Moroccan tariff is. Only answer what the SQL 'Observation' provides.
+- LIMITS: Always limit your search to the top 10 results to keep the response concise unless more are specifically requested.
+
+### OUTPUT FORMAT ###
+1. Start with a direct answer to the user's question.
+2. Provide a small markdown table of the raw data you found if it's numeric or list-based.
+3. State which database tables were consulted for this answer.
 """
 
 # 6. Create the Execution Agent
