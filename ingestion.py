@@ -52,6 +52,12 @@ def process_pdf_to_vectors(file_path: str, filename: str):
 
         # 5. Add to Supabase
         db.add_texts(texts=chunks, metadatas=metadatas)
+
+        # 3. NOW INTERACT WITH THE DATABASE
+        # Because we added 'pool_pre_ping=True' in rag_agent.py,
+        # LangChain will automatically reconnect if the connection died during Step 1.
+        print(f"💾 Saving {len(chunks)} chunks to Supabase...")
+        db.add_texts(texts=chunks, metadatas=metadatas)
         
         print(f"✅ Ingested {filename} ({len(chunks)} chunks).")
         return len(chunks)

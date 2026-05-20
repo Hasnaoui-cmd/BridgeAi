@@ -13,7 +13,7 @@ from supabase import create_client
 from supabase_client import supabase_admin
 import shutil
 from ingestion import process_pdf_to_vectors
-from vision_agent import extract_invoice_data
+from vision_agent import extract_data_from_file
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -377,7 +377,7 @@ async def get_user_sessions(user_id: str):
 @app.post("/admin/upload-pdf")
 async def admin_upload_pdf(
     file: UploadFile = File(...), 
-    user_id: str = Form(...), # Pass this from the frontend
+    user_id: str = Form(...), 
     document_type: str = Form("regulation")
 ):
     temp_path = f"temp_{file.filename}"
@@ -385,36 +385,69 @@ async def admin_upload_pdf(
         shutil.copyfileobj(file.file, buffer)
 
     try:
-        # 1. Upload to Supabase Storage (The physical file)
+        # STEP 1: Upload physical PDF to Supabase Storage (Fast)
         storage_path = f"knowledge_base/{file.filename}"
-        with open(temp_path, "rb") as f:
-            supabase_admin.storage.from_("legal-documents").upload(storage_path, f)
+        with open(temp_path, "rb") as f_data:
+            supabase_admin.storage.from_("legal-documents").upload(
+                path=storage_path, 
+                file=f_data, 
+                file_options={"upsert": "true"} # Allow overwriting existing files
+            )
         
-        # Get the public URL for the record
+        # Get the public URL
         storage_url = supabase_admin.storage.from_("legal-documents").get_public_url(storage_path)
 
-        # 2. Vectorize for the RAG Agent (The AI knowledge)
-        num_chunks = process_pdf_to_vectors(temp_path, file.filename)
-
-        # 3. Register in compliance_documents (The Management record)
-        # This allows the Admin to see the file in their list!
+        # STEP 2: REGISTER IN DATABASE IMMEDIATELY (Fast)
+        # We save it with status 'Vectorizing...' so it appears in your File Manager UI right away
         doc_record = {
             "user_id": user_id,
             "document_name": file.filename,
             "document_type": document_type,
-            "storage_url": storage_url,
+            "storage_url": str(storage_url),
+            "status": "Vectorizing..." 
         }
-        print(f"📝 Attempting to register {file.filename} for user {user_id}...")
-        res = supabase_admin.from_("compliance_documents").insert(doc_record).execute()
-        print(f"✅ Registry response: {res}")
+        
+        print(f"📝 Pre-registering {file.filename} in database...")
+        registry_res = supabase_admin.from_("compliance_documents").upsert(
+            doc_record, on_conflict="document_name"
+        ).execute()
+        
+        # Capture the ID of the record we just created/updated
+        record_id = registry_res.data[0]['id']
 
-        return {
-            "status": "success", 
-            "message": f"Ingested {file.filename}. {num_chunks} chunks added to AI memory."
-        }
+        # STEP 3: PERFORM VECTORIZATION (Slow - The part that might timeout)
+        try:
+            num_chunks = process_pdf_to_vectors(temp_path, file.filename)
+            
+            # STEP 4: UPDATE STATUS TO COMPLETED
+            supabase_admin.from_("compliance_documents").update({
+                "status": "Completed"
+            }).eq("id", record_id).execute()
+            
+            print(f"✅ Full Success: {file.filename} ({num_chunks} chunks)")
+            return {
+                "status": "success", 
+                "message": f"Ingested {file.filename}. {num_chunks} chunks stored."
+            }
+
+        except Exception as vec_err:
+            # If the slow AI part fails, we update the row to 'Error' 
+            # but we DON'T delete the row so the admin can see it failed.
+            supabase_admin.from_("compliance_documents").update({
+                "status": "Error during vectorization"
+            }).eq("id", record_id).execute()
+            
+            print(f"⚠️ AI Processing failed: {vec_err}")
+            return {
+                "status": "partial_success", 
+                "message": "File uploaded to registry, but AI vectorization failed. Check File Manager."
+            }
+
     except Exception as e:
+        print(f"❌ Critical Upload Error: {e}")
         return {"status": "error", "message": str(e)}
     finally:
+        # Always delete the local temp file to save disk space
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
@@ -498,38 +531,76 @@ async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is 
 
 
 
-@app.post("/chat/vision")
-async def chat_with_vision(
-    file: UploadFile = File(...),
+@app.post("/chat/documents")
+async def chat_with_multiple_documents(
+    files: list[UploadFile] = File(...), 
     question: str = Form(...),
     session_id: str = Form(...)
 ):
     try:
-        image_bytes = await file.read()
-        invoice_json = extract_invoice_data(image_bytes)
+        all_docs_data = []
         
-        context_prompt = f"""
-        [DOCUMENT CONTEXT]
-        Data extracted from invoice: {json.dumps(invoice_json)}
-        [USER QUESTION]
-        {question}
-        """
-        # 1. Get the actual role (Admin or User)
+        # 1. Process all uploaded files (Images or PDFs)
+        for file in files:
+            file_bytes = await file.read()
+            # This handles Llama-Parse for PDFs and Groq Vision for Images
+            doc_json = await extract_data_from_file(file_bytes, file.filename)
+            all_docs_data.append({
+                "filename": file.filename,
+                "extracted_data": doc_json
+            })
+
+        # 2. Construct the aggregated comparison context
+        context_parts = []
+        for i, doc in enumerate(all_docs_data):
+            context_parts.append(f"DOCUMENT {i+1} (Filename: {doc['filename']}):\n{json.dumps(doc['extracted_data'], indent=2)}")
+        
+        multi_doc_context = "\n\n---\n\n".join(context_parts)
+
+        # 3. Create the multi-document intelligence prompt
+        context_prompt = f"""### ROLE ###
+You are the Lead Trade Compliance Analyst for BridgeAI. Your expertise is in detecting discrepancies across multiple trade documents.
+
+### TASK ###
+Analyze the {len(files)} attached documents and answer the user's question. 
+If the user asks to 'find risks' or 'check consistency', compare the data points between all documents (e.g., check if the weight on the Invoice matches the Bill of Lading).
+
+### DOCUMENT CONTEXT (EXTRACTED DATA) ###
+{multi_doc_context}
+
+### DOMAIN-SPECIFIC KNOWLEDGE ###
+- HS CODES: Treat as strings. Check if they match across documents.
+- TARIFFS: Use the SQL tool if the user asks for rates.
+- DISCREPANCIES: If Document A says '10 units' and Document B says '12 units', flag this as a major compliance risk.
+
+### STRICT CONSTRAINTS ###
+- NO HALLUCINATION: If tools return no data, state you don't have that record.
+- CROSS-CHECK: Always mention which documents you are comparing.
+
+### OUTPUT FORMAT ###
+1. Start with a direct answer or a '📋 Document Cross-Check Summary'.
+2. Use ⚠️ WARNING for any data mismatches found between files.
+3. List the database tables used for any tariff/legal lookups.
+
+[USER QUESTION]
+{question}
+"""
+        # 4. Role lookup for correct history badge
         user_id = session_id.split("___")[0]
         actual_role = get_user_role_from_id(user_id)
 
-        # 2. SAVE USER MESSAGE IMMEDIATELY
-        save_message(session_id, actual_role, f"📸 [Invoice Attached] {question}")
-
+        # 5. SAVE USER MESSAGE with file manifest
+        filenames = ", ".join([f.filename for f in files])
+        save_message(session_id, actual_role, f"📑 [Attached {len(files)} files: {filenames}] {question}")
+     
+        # 6. Fetch history context
         past_messages = get_session_history(session_id)
         recent_context = past_messages[-10:] if len(past_messages) > 10 else past_messages
 
         async def stream_and_persist():
             full_ai_answer = ""
             
-            # The orchestrator handles the tools (SQL/RAG) and gives us the tokens
             async for chunk in stream_orchestrator(context_prompt, recent_context):
-                # We need to extract the raw text from the SSE 'token' chunks
                 if "data: " in chunk:
                     for line in chunk.split('\n'):
                         if line.startswith("data: "):
@@ -541,29 +612,33 @@ async def chat_with_vision(
                                 pass
                 yield chunk
 
-            # 3. SAVE AI MESSAGE AFTER STREAM COMPLETES
+            # 7. Final Persistence
             if full_ai_answer.strip():
-                # Save to History
+                # Save AI answer to chat history
                 save_message(session_id, "ai", full_ai_answer)
                 
-                # Save to Risk Dashboard (Capture High/Low Risk)
-                user_id = session_id.split("___")[0]
-                risk_keywords = ["warning", "risk", "mismatch", "error", "caution", "alert", "danger"]
+                # Auto-Log Risk if AI mentions danger/mismatch
+                risk_keywords = ["warning", "risk", "mismatch", "error", "caution", "alert", "danger", "discrepancy"]
                 status = "High Risk" if any(w in full_ai_answer.lower() for w in risk_keywords) else "Low Risk"
                 
                 try:
                     supabase_admin.from_("compliance_screenings").insert({
                         "user_id": user_id,
                         "session_id": session_id,
-                        "screening_type": "Invoice Multi-modal Audit",
+                        "screening_type": f"Multi-Doc Audit ({len(files)} files)",
                         "status": status,
-                        "ai_analysis_notes": full_ai_answer[:1000]
+                        "ai_analysis_notes": full_ai_answer[:1200]
                     }).execute()
+                    print(f"✅ Multi-doc risk logged: {status}")
                 except Exception as e:
                     print(f"⚠️ Risk Log Error: {e}")
 
-        return StreamingResponse(stream_and_persist(), media_type="text/event-stream")
+        return StreamingResponse(
+            stream_and_persist(), 
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+        )
 
     except Exception as e:
-        print(f"❌ Vision Endpoint Error: {e}")
+        print(f"❌ Multi-Doc Endpoint Error: {e}")
         return {"error": str(e)}

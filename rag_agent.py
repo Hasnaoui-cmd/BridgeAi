@@ -5,6 +5,7 @@ from langchain_postgres import PGVector
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from sqlalchemy import create_engine
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -20,10 +21,19 @@ print("🧠 Booting up RAG Agent (Unstructured Document Search)...")
 embedding_model = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")
 connection_string = READONLY_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
 
+# NEW: Create a robust engine with pre-ping
+# This checks if the connection is alive before every query
+engine = create_engine(
+    connection_string,
+    pool_pre_ping=True,
+    pool_recycle=300 # Restart connection every 5 minutes
+)
+
 db = PGVector(
     embeddings=embedding_model,
     collection_name="documents", 
-    connection=connection_string,
+    #connection=connection_string,
+    connection=engine, # Pass the engine instead of the string
     use_jsonb=True,
 )
 retriever = db.as_retriever(search_kwargs={"k": 6}) 
