@@ -6,7 +6,6 @@ from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from sqlalchemy import create_engine
-from sqlalchemy import create_engine
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -30,19 +29,9 @@ engine = create_engine(
     pool_recycle=300 # Restart connection every 5 minutes
 )
 
-# NEW: Create a robust engine with pre-ping
-# This checks if the connection is alive before every query
-engine = create_engine(
-    connection_string,
-    pool_pre_ping=True,
-    pool_recycle=300 # Restart connection every 5 minutes
-)
-
 db = PGVector(
     embeddings=embedding_model,
     collection_name="documents", 
-    #connection=connection_string,
-    connection=engine, # Pass the engine instead of the string
     #connection=connection_string,
     connection=engine, # Pass the engine instead of the string
     use_jsonb=True,
@@ -91,8 +80,6 @@ def run_rag_agent(question: str, history_str: str):
         "context": format_docs(docs),
         "chat_history": history_str,
         "input": question
-    }, config={"run_name": "RAG_Legal_Expert"}
-    )
     }, config={"run_name": "RAG_Legal_Expert"}
     )
     
