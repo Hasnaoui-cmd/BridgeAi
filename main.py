@@ -13,11 +13,13 @@ from supabase import create_client
 from supabase_client import supabase_admin
 import shutil
 import re
+import re
 from ingestion import process_pdf_to_vectors
 from vision_agent import extract_data_from_file
 from routers.prediction import router as prediction_router
 from contextlib import asynccontextmanager
 import warnings
+from contextlib import asynccontextmanager
 
 warnings.filterwarnings("ignore")
 
@@ -43,12 +45,18 @@ async def lifespan(app: FastAPI):
     yield
 
 # ─────────────────────────────────────────────
-# 2. FastAPI App
+# 2. FastAPI App (with lifespan for clean boot)
 # ─────────────────────────────────────────────
 app = FastAPI(title="AutoTrade-Comply API", lifespan=lifespan)
 app.include_router(prediction_router)
 app.add_middleware(
     CORSMiddleware,
+    allow_origins=[
+        "http://localhost:4200",
+        "http://localhost:4201",
+        "http://localhost:4202",
+        "http://localhost:5173",
+    ],
     allow_origins=[
         "http://localhost:4200",
         "http://localhost:4201",
@@ -403,6 +411,7 @@ async def get_user_sessions(user_id: str):
 async def admin_upload_pdf(
     file: UploadFile = File(...), 
     user_id: str = Form(...), 
+    user_id: str = Form(...), 
     document_type: str = Form("regulation")
 ):
     # 1. SANITIZE FILENAME (Fixes the 'Invalid Key' and 'Broken View' errors)
@@ -410,8 +419,14 @@ async def admin_upload_pdf(
     clean_name = re.sub(r'[^a-zA-Z0-9.]', '_', file.filename)
     
     temp_path = f"temp_{clean_name}"
+    # 1. SANITIZE FILENAME (Fixes the 'Invalid Key' and 'Broken View' errors)
+    # Replaces spaces and special characters with underscores
+    clean_name = re.sub(r'[^a-zA-Z0-9.]', '_', file.filename)
+    
+    temp_path = f"temp_{clean_name}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
+        
         
     try:
         # STEP 1: Upload to Supabase Storage using the CLEAN name
@@ -425,14 +440,29 @@ async def admin_upload_pdf(
                     "content-type": "application/pdf"
                 }
             )
+        # STEP 1: Upload to Supabase Storage using the CLEAN name
+        storage_path = f"knowledge_base/{clean_name}"
+        with open(temp_path, "rb") as f_data:
+            supabase_admin.storage.from_("legal-documents").upload(
+                path=storage_path, 
+                file=f_data, 
+                file_options={
+                    "upsert": "true",
+                    "content-type": "application/pdf"
+                }
+            )
         
+        # Get the actual public URL from Supabase
         # Get the actual public URL from Supabase
         storage_url = supabase_admin.storage.from_("legal-documents").get_public_url(storage_path)
 
         # STEP 2: REGISTER IN DATABASE Registry
         # We store the 'clean_name' so the Delete function can find it later
+        # STEP 2: REGISTER IN DATABASE Registry
+        # We store the 'clean_name' so the Delete function can find it later
         doc_record = {
             "user_id": user_id,
+            "document_name": clean_name, 
             "document_name": clean_name, 
             "document_type": document_type,
             "storage_url": str(storage_url),
@@ -473,7 +503,46 @@ async def admin_upload_pdf(
                 "message": "File registered, but AI processing failed."
             }
 
+            "storage_url": str(storage_url),
+            "status": "Vectorizing..." 
+        }
+        
+        print(f"📝 Pre-registering {clean_name} in database...")
+        registry_res = supabase_admin.from_("compliance_documents").upsert(
+            doc_record, on_conflict="document_name"
+        ).execute()
+        
+        record_id = registry_res.data[0]['id']
+
+        # STEP 3: PERFORM VECTORIZATION (Slow AI Step)
+        try:
+            # We pass the clean_name as the 'source' for the vector metadata
+            num_chunks = process_pdf_to_vectors(temp_path, clean_name)
+            
+            # STEP 4: UPDATE STATUS TO COMPLETED
+            supabase_admin.from_("compliance_documents").update({
+                "status": "Completed"
+            }).eq("id", record_id).execute()
+            
+            print(f"✅ Success: {clean_name} ({num_chunks} chunks)")
+            return {
+                "status": "success", 
+                "message": f"Ingested {clean_name}. {num_chunks} chunks stored."
+            }
+
+        except Exception as vec_err:
+            supabase_admin.from_("compliance_documents").update({
+                "status": "Error during vectorization"
+            }).eq("id", record_id).execute()
+            
+            print(f"⚠️ AI Processing failed: {vec_err}")
+            return {
+                "status": "partial_success", 
+                "message": "File registered, but AI processing failed."
+            }
+
     except Exception as e:
+        print(f"❌ Critical Upload Error: {e}")
         print(f"❌ Critical Upload Error: {e}")
         return {"status": "error", "message": str(e)}
     finally:
@@ -487,8 +556,12 @@ async def delete_document(doc_id: str, filename: str):
     """
     Performs a 3-way deletion: Storage, Registry, and Vector Knowledge.
     SAFE: It only deletes vectors where source matches the filename.
+    Performs a 3-way deletion: Storage, Registry, and Vector Knowledge.
+    SAFE: It only deletes vectors where source matches the filename.
     """
     try:
+        print(f"🗑️ Targeted Delete Started for: {filename}")
+
         print(f"🗑️ Targeted Delete Started for: {filename}")
 
         # 1. Delete from Supabase Storage
@@ -497,11 +570,21 @@ async def delete_document(doc_id: str, filename: str):
             print("✅ Removed from storage")
         except:
             print("⚠️ File not found in storage, continuing...")
+        try:
+            supabase_admin.storage.from_("legal-documents").remove([f"knowledge_base/{filename}"])
+            print("✅ Removed from storage")
+        except:
+            print("⚠️ File not found in storage, continuing...")
 
+        # 2. Delete from compliance_documents Registry
         # 2. Delete from compliance_documents Registry
         supabase_admin.from_("compliance_documents").delete().eq("id", doc_id).execute()
         print("✅ Removed from registry table")
+        print("✅ Removed from registry table")
 
+        # 3. TARGETED DELETE FROM AI MEMORY
+        # This ONLY deletes vectors created by the admin (tagged with this filename)
+        # Your original 'documents' RAG data is 100% safe.
         # 3. TARGETED DELETE FROM AI MEMORY
         # This ONLY deletes vectors created by the admin (tagged with this filename)
         # Your original 'documents' RAG data is 100% safe.
@@ -513,7 +596,10 @@ async def delete_document(doc_id: str, filename: str):
                 )
                 conn.commit()
         print("✅ Removed associated vector chunks")
+                conn.commit()
+        print("✅ Removed associated vector chunks")
         
+        return {"status": "success", "message": f"Successfully wiped {filename}."}
         return {"status": "success", "message": f"Successfully wiped {filename}."}
     except Exception as e:
         print(f"❌ Delete Error: {e}")
@@ -522,7 +608,6 @@ async def delete_document(doc_id: str, filename: str):
 class UpdateRoleRequest(BaseModel):
     role: str
     admin_id: str
-
 @app.patch("/admin/users/{target_user_id}/role")
 async def update_user_role(target_user_id: str, request: UpdateRoleRequest):
     try:
@@ -643,9 +728,77 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
 {question}
 """
         # 4. Role lookup for correct history badge
+        all_docs_data = []
+        
+        # 1. Process all uploaded files (Images or PDFs)
+        for file in files:
+            file_bytes = await file.read()
+            # This handles Llama-Parse for PDFs and Groq Vision for Images
+            doc_json = await extract_data_from_file(file_bytes, file.filename)
+            all_docs_data.append({
+                "filename": file.filename,
+                "extracted_data": doc_json
+            })
+
+        # 2. Construct the aggregated comparison context
+        context_parts = []
+        for i, doc in enumerate(all_docs_data):
+            context_parts.append(f"DOCUMENT {i+1} (Filename: {doc['filename']}):\n{json.dumps(doc['extracted_data'], indent=2)}")
+        
+        multi_doc_context = "\n\n---\n\n".join(context_parts)
+
+        # 3. Create the multi-document intelligence prompt
+        context_prompt = f"""### ROLE ###
+You are the Lead Trade Compliance Auditor for BridgeAI. Your mission is to provide the EXACT tariff classification and detect discrepancies across trade documents.
+
+### THE DECISION LOGIC (MANDATORY) ###
+You must map the items found in the documents to the EXACT tariff row in our database. Do not just provide a list of options; make a definitive choice based on the evidence.
+
+### TASK ###
+Analyze the {len(files)} attached documents and answer the user's question. 
+If the user asks to 'find risks' or 'check consistency', compare the data points between all documents (e.g., check if the weight on the Invoice matches the Bill of Lading).
+
+### DOCUMENT CONTEXT (EXTRACTED DATA) ###
+{multi_doc_context}
+
+### DOMAIN-SPECIFIC KNOWLEDGE ###
+- HS CODES: Treat as strings. Check if they match across documents.
+- TARIFFS: Use the SQL tool if the user asks for rates.
+- DISCREPANCIES: If Document A says '10 units' and Document B says '12 units', flag this as a major compliance risk.
+
+### MATCHING PROTOCOL ###
+1. EXTRACT: Identify specific item details from the documents (e.g., 'Used', 'New', 'Engine size', 'Weight', 'Material').
+2. CROSS-CHECK: Compare Document A (Invoice) vs Document B (Bill of Lading). Flag any mismatched quantities or descriptions.
+3. QUERY: Use 'search_structured_database' to get ALL sub-codes for the relevant HS category.
+4. SEMANTIC MAP: Compare the document description to the 'description_fr' in the database.
+   - Example: Document says 'Second hand' -> Map to 'véhicules usagés'.
+   - Example: Document says 'New' -> Map to 'véhicules neufs'.
+5. VERDICT: State exactly which specific code applies and the precise duty rate.
+
+
+### STRICT CONSTRAINTS ###
+- NO HALLUCINATION: If tools return no data, state you don't have that record.
+- CROSS-CHECK: Always mention which documents you are comparing.
+
+### OUTPUT FORMAT ###
+1. Start with a direct verdict: "🎯 **Target Classification: [HS CODE]**"
+2. Provide the **Reasoning** (Why this row matches the document description).
+3. Provide the **💰 Final Duty Rate**.
+4. Display a professional Markdown Table showing the matching row and 1-2 close alternatives for transparency.
+5. Use ⚠️ WARNING for any data mismatches found between the {len(files)} files.
+
+[USER QUESTION]
+{question}
+"""
+        # 4. Role lookup for correct history badge
         user_id = session_id.split("___")[0]
         actual_role = get_user_role_from_id(user_id)
 
+        # 5. SAVE USER MESSAGE with file manifest
+        filenames = ", ".join([f.filename for f in files])
+        save_message(session_id, actual_role, f"📑 [Attached {len(files)} files: {filenames}] {question}")
+     
+        # 6. Fetch history context
         # 5. SAVE USER MESSAGE with file manifest
         filenames = ", ".join([f.filename for f in files])
         save_message(session_id, actual_role, f"📑 [Attached {len(files)} files: {filenames}] {question}")
@@ -670,10 +823,14 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
                 yield chunk
 
             # 7. Final Persistence
+            # 7. Final Persistence
             if full_ai_answer.strip():
+                # Save AI answer to chat history
                 # Save AI answer to chat history
                 save_message(session_id, "ai", full_ai_answer)
                 
+                # Auto-Log Risk if AI mentions danger/mismatch
+                risk_keywords = ["warning", "risk", "mismatch", "error", "caution", "alert", "danger", "discrepancy"]
                 # Auto-Log Risk if AI mentions danger/mismatch
                 risk_keywords = ["warning", "risk", "mismatch", "error", "caution", "alert", "danger", "discrepancy"]
                 status = "High Risk" if any(w in full_ai_answer.lower() for w in risk_keywords) else "Low Risk"
@@ -683,9 +840,12 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
                         "user_id": user_id,
                         "session_id": session_id,
                         "screening_type": f"Multi-Doc Audit ({len(files)} files)",
+                        "screening_type": f"Multi-Doc Audit ({len(files)} files)",
                         "status": status,
                         "ai_analysis_notes": full_ai_answer[:1200]
+                        "ai_analysis_notes": full_ai_answer[:1200]
                     }).execute()
+                    print(f"✅ Multi-doc risk logged: {status}")
                     print(f"✅ Multi-doc risk logged: {status}")
                 except Exception as e:
                     print(f"⚠️ Risk Log Error: {e}")
@@ -695,8 +855,16 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
             media_type="text/event-stream",
             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
         )
+        return StreamingResponse(
+            stream_and_persist(), 
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+        )
 
     except Exception as e:
         print(f"❌ Multi-Doc Endpoint Error: {e}")
+        print(f"❌ Multi-Doc Endpoint Error: {e}")
         return {"error": str(e)}
+
+
 

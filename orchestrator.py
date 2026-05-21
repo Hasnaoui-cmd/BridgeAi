@@ -20,7 +20,7 @@ from sql_agent import run_sql_agent
 # 1. Load Environment Variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-print("🕸️ Booting up LangGraph Orchestrator (Streaming Mode)...")
+
 
 # 2. Define the Graph State
 class GraphState(TypedDict):
@@ -77,6 +77,23 @@ async def stream_orchestrator(question: str, past_messages: list):
         or explicitly asks for numeric tariff rates, taxes, duties, or inventory data.
         DO NOT use this tool for general questions about customs procedures, definitions,
         or how things work. This tool queries a SQL database with structured numeric data.
+        USE THIS TOOL for: 
+        1. Numerical data (tariffs, tax rates).
+        2. PRODUCT DEFINITIONS/DESCRIPTIONS for specific HS Codes. 
+        If the user asks 'What is HS 8703?' or 'What does this code stand for?', 
+        use this tool to check the 'description_fr' in the tariffs table.
+        """
+        # 1. Check if the query looks like an HS code (contains numbers)
+        if any(char.isdigit() for char in search_query):
+            # Strip dots and spaces ONLY for codes
+            clean_query = search_query.replace(".", "").replace(" ", "")
+        else:
+            # Keep spaces for names like "electric motors"
+            clean_query = search_query
+        
+        # We force a command that the SQL Agent understands perfectly
+        task = f"Find the hs_code, description_fr, and import_duty_rate for HS Code prefix {clean_query} in the morocco_tariffs table."
+        return run_sql_agent(task)
         USE THIS TOOL for: 
         1. Numerical data (tariffs, tax rates).
         2. PRODUCT DEFINITIONS/DESCRIPTIONS for specific HS Codes. 

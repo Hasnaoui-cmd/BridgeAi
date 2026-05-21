@@ -9,6 +9,7 @@ import Assistant from './components/Assistant';
 import Kanban from './components/Kanban';
 import RoutesPage from './components/Routes';
 import Risk from './components/Risk';
+import Prediction from './components/Prediction';
 import Settings from './components/Settings';
 import Login from './components/Login';
 import SignUp from './components/SignUp';
@@ -47,6 +48,7 @@ export default function App() {
           <Route path="documents" element={<Kanban />} />
           <Route path="routes" element={<RoutesPage />} />
           <Route path="risks" element={<Risk />} />
+          <Route path="prediction" element={<Prediction />} />
           <Route path="settings" element={<Settings />} />
           <Route
             path="admin"
