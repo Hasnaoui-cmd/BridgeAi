@@ -12,8 +12,11 @@ from orchestrator import stream_orchestrator
 from supabase import create_client
 from supabase_client import supabase_admin
 import shutil
+import re
 from ingestion import process_pdf_to_vectors
 from vision_agent import extract_data_from_file
+from routers.prediction import router as prediction_router
+from contextlib import asynccontextmanager
 import warnings
 
 warnings.filterwarnings("ignore")
@@ -27,12 +30,31 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
 # ─────────────────────────────────────────────
+# 2. FastAPI App (with lifespan for clean boot)
+# ─────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Runs once on the worker process — prints boot messages a single time."""
+    print("🧠 Booting up RAG Agent (Unstructured Document Search)...")
+    print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
+    print("🕸️  Booting up LangGraph Orchestrator (Streaming Mode)...")
+    print("🔮 Booting up Prediction Agent (LangGraph State Machine)...")
+    print("✅ All agents online — server ready!")
+    yield
+
+# ─────────────────────────────────────────────
 # 2. FastAPI App
 # ─────────────────────────────────────────────
-app = FastAPI(title="AutoTrade-Comply API")
+app = FastAPI(title="AutoTrade-Comply API", lifespan=lifespan)
+app.include_router(prediction_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"],
+    allow_origins=[
+        "http://localhost:4200",
+        "http://localhost:4201",
+        "http://localhost:4202",
+        "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -374,8 +396,7 @@ async def get_user_sessions(user_id: str):
 # Initialize Supabase Admin Client (using Service Role Key to bypass RLS)
 #supabase_admin = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
 
-import re
-import shutil
+
 
 # --- ENDPOINT: UPLOAD PDF ---
 @app.post("/admin/upload-pdf")
@@ -678,3 +699,4 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
     except Exception as e:
         print(f"❌ Multi-Doc Endpoint Error: {e}")
         return {"error": str(e)}
+

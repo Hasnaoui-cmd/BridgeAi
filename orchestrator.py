@@ -104,7 +104,7 @@ async def stream_orchestrator(question: str, past_messages: list):
         Use this when the query is conceptual, process-oriented, or asks about how
         something works. This tool searches legal PDFs and regulatory documents.
         """
-        pass
+        return run_rag_agent(search_query, history_str)
 
     tools = [search_structured_database, search_legal_documents]
     llm_with_tools = llm.bind_tools(tools)
