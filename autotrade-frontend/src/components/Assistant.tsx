@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Mic, ArrowUp, StopCircle, Lock, Paperclip, X, FileText } from 'lucide-react';
-import { marked } from 'marked';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { getHistory, streamChat, streamAudioChat, streamDocumentChat, transcribeAudio } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
@@ -9,7 +10,6 @@ import { useAuth } from '../lib/auth';
 interface Message {
   role: 'user' | 'ai' | 'admin';
   content: string;
-  htmlContent?: string;
   sources?: string[];
   isStreaming?: boolean;    // true while tokens are still arriving
   statusText?: string;     // e.g. "📊 Querying Enterprise Database..."
@@ -155,7 +155,6 @@ export default function Assistant() {
           res.messages.map(async (msg: any) => ({
             role: msg.role,
             content: msg.content,
-            htmlContent: msg.role === 'ai' ? await marked.parse(msg.content) : undefined,
           }))
         );
         setMessages(parsedMsgs);
@@ -182,7 +181,6 @@ export default function Assistant() {
     setMessages(prev => [...prev, {
       role: 'ai',
       content: '',
-      htmlContent: '',
       isStreaming: true,
     }]);
 
@@ -197,8 +195,6 @@ export default function Assistant() {
             updated[updated.length - 1] = {
               ...last,
               content: current,
-              // We render raw text during streaming (fast) and parse markdown on done
-              htmlContent: undefined,
               statusText: undefined,
             };
           }
@@ -220,7 +216,6 @@ export default function Assistant() {
 
       onDone: async (sources: string[], _agents: string) => {
         const finalContent = streamAccRef.current;
-        const htmlContent = finalContent ? await marked.parse(finalContent) : '';
 
         setMessages(prev => {
           const updated = [...prev];
@@ -229,7 +224,6 @@ export default function Assistant() {
             updated[updated.length - 1] = {
               ...last,
               content: finalContent,
-              htmlContent,
               sources: sources.length > 0 ? sources : undefined,
               isStreaming: false,
               statusText: undefined,
@@ -254,7 +248,6 @@ export default function Assistant() {
             updated[updated.length - 1] = {
               ...last,
               content: `⚠️ ${error}`,
-              htmlContent: `<p>⚠️ ${error}</p>`,
               isStreaming: false,
               statusText: undefined,
             };
@@ -495,14 +488,14 @@ export default function Assistant() {
                           </div>
                         </div>
                       ) : (
-                        <div className="flex flex-col gap-1 max-w-[85%]">
+                        <div className="flex flex-col gap-1 w-full max-w-full">
                           {/* ── AI message header: BridgeAI + badge ── */}
                           <div className="flex items-center pl-1">
                             <span className="text-xs font-medium text-stone-500">BridgeAI</span>
                             {getRoleBadge('ai')}
                           </div>
 
-                          <div className="prose prose-lg prose-stone max-w-none text-stone-800 text-lg leading-[1.75]">
+                          <div className="prose prose-lg prose-stone max-w-none text-stone-800 text-lg leading-[1.75] overflow-hidden">
                             {/* Status badge — shown while agents are working */}
                             {msg.statusText && (
                               <div className="mb-3 inline-flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 animate-pulse">
@@ -510,15 +503,57 @@ export default function Assistant() {
                               </div>
                             )}
 
-                            {/* Streaming: render raw text for speed */}
-                            {msg.isStreaming ? (
-                              <div className="whitespace-pre-wrap">
-                                {msg.content}
-                                <span className="inline-block w-2 h-5 bg-stone-400 ml-0.5 animate-pulse rounded-sm" />
-                              </div>
-                            ) : (
-                              /* Finished: render parsed markdown */
-                              <div dangerouslySetInnerHTML={{ __html: msg.htmlContent || msg.content }} />
+                            <ReactMarkdown
+                              remarkPlugins={[remarkGfm]}
+                              components={{
+                                table: ({ node, ...props }) => (
+                                  <div className="overflow-x-auto my-6 rounded-xl border border-stone-200 shadow-sm w-full">
+                                    <table className="w-full text-left border-collapse" {...props} />
+                                  </div>
+                                ),
+                                thead: ({ node, ...props }) => (
+                                  <thead className="bg-stone-100 text-stone-500 uppercase text-xs font-bold" {...props} />
+                                ),
+                                th: ({ node, ...props }) => (
+                                  <th className="px-4 py-3 border-b border-stone-200 whitespace-nowrap" {...props} />
+                                ),
+                                td: ({ node, children, ...props }) => {
+                                  // Helper to check for percentages/numbers
+                                  const checkPercentage = (child: any): boolean => {
+                                    if (typeof child === 'string') {
+                                      if (child.includes('%')) return true;
+                                      if (/^\d{1,3}\.\d+$/.test(child.trim())) return true; // matches e.g. 30.0
+                                    } else if (Array.isArray(child)) {
+                                      return child.some(checkPercentage);
+                                    } else if (child?.props?.children) {
+                                      return checkPercentage(child.props.children);
+                                    }
+                                    return false;
+                                  };
+                                  
+                                  const isPercentage = checkPercentage(children);
+                                  
+                                  return (
+                                    <td className={`px-4 py-3 text-sm ${isPercentage ? 'font-bold text-amber-700' : ''}`} {...props}>
+                                      {children}
+                                    </td>
+                                  );
+                                },
+                                tr: ({ node, ...props }) => (
+                                  <tr className="border-b border-stone-100 last:border-0 hover:bg-amber-50/30 even:bg-stone-50/50 transition-colors" {...props} />
+                                ),
+                                p: ({ node, children, ...props }) => {
+                                  // We can attach the blinking cursor to the last paragraph if streaming
+                                  return <p className="mb-4 last:mb-0" {...props}>{children}</p>;
+                                }
+                              }}
+                            >
+                              {msg.content}
+                            </ReactMarkdown>
+
+                            {/* Streaming Cursor placed directly after content */}
+                            {msg.isStreaming && (
+                              <span className="inline-block w-2.5 h-5 bg-stone-400 ml-1 translate-y-1 animate-pulse rounded-[1px]" />
                             )}
 
                             {msg.sources && msg.sources.length > 0 && (
@@ -687,4 +722,3 @@ export default function Assistant() {
     </div>
   );
 }
-

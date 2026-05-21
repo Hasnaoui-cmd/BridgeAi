@@ -374,65 +374,74 @@ async def get_user_sessions(user_id: str):
 # Initialize Supabase Admin Client (using Service Role Key to bypass RLS)
 #supabase_admin = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
 
+import re
+import shutil
+
+# --- ENDPOINT: UPLOAD PDF ---
 @app.post("/admin/upload-pdf")
 async def admin_upload_pdf(
     file: UploadFile = File(...), 
     user_id: str = Form(...), 
     document_type: str = Form("regulation")
 ):
-    temp_path = f"temp_{file.filename}"
+    # 1. SANITIZE FILENAME (Fixes the 'Invalid Key' and 'Broken View' errors)
+    # Replaces spaces and special characters with underscores
+    clean_name = re.sub(r'[^a-zA-Z0-9.]', '_', file.filename)
+    
+    temp_path = f"temp_{clean_name}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
+        
     try:
-        # STEP 1: Upload physical PDF to Supabase Storage (Fast)
-        storage_path = f"knowledge_base/{file.filename}"
+        # STEP 1: Upload to Supabase Storage using the CLEAN name
+        storage_path = f"knowledge_base/{clean_name}"
         with open(temp_path, "rb") as f_data:
             supabase_admin.storage.from_("legal-documents").upload(
                 path=storage_path, 
                 file=f_data, 
-                file_options={"upsert": "true"} # Allow overwriting existing files
+                file_options={
+                    "upsert": "true",
+                    "content-type": "application/pdf"
+                }
             )
         
-        # Get the public URL
+        # Get the actual public URL from Supabase
         storage_url = supabase_admin.storage.from_("legal-documents").get_public_url(storage_path)
 
-        # STEP 2: REGISTER IN DATABASE IMMEDIATELY (Fast)
-        # We save it with status 'Vectorizing...' so it appears in your File Manager UI right away
+        # STEP 2: REGISTER IN DATABASE Registry
+        # We store the 'clean_name' so the Delete function can find it later
         doc_record = {
             "user_id": user_id,
-            "document_name": file.filename,
+            "document_name": clean_name, 
             "document_type": document_type,
             "storage_url": str(storage_url),
             "status": "Vectorizing..." 
         }
         
-        print(f"📝 Pre-registering {file.filename} in database...")
+        print(f"📝 Pre-registering {clean_name} in database...")
         registry_res = supabase_admin.from_("compliance_documents").upsert(
             doc_record, on_conflict="document_name"
         ).execute()
         
-        # Capture the ID of the record we just created/updated
         record_id = registry_res.data[0]['id']
 
-        # STEP 3: PERFORM VECTORIZATION (Slow - The part that might timeout)
+        # STEP 3: PERFORM VECTORIZATION (Slow AI Step)
         try:
-            num_chunks = process_pdf_to_vectors(temp_path, file.filename)
+            # We pass the clean_name as the 'source' for the vector metadata
+            num_chunks = process_pdf_to_vectors(temp_path, clean_name)
             
             # STEP 4: UPDATE STATUS TO COMPLETED
             supabase_admin.from_("compliance_documents").update({
                 "status": "Completed"
             }).eq("id", record_id).execute()
             
-            print(f"✅ Full Success: {file.filename} ({num_chunks} chunks)")
+            print(f"✅ Success: {clean_name} ({num_chunks} chunks)")
             return {
                 "status": "success", 
-                "message": f"Ingested {file.filename}. {num_chunks} chunks stored."
+                "message": f"Ingested {clean_name}. {num_chunks} chunks stored."
             }
 
         except Exception as vec_err:
-            # If the slow AI part fails, we update the row to 'Error' 
-            # but we DON'T delete the row so the admin can see it failed.
             supabase_admin.from_("compliance_documents").update({
                 "status": "Error during vectorization"
             }).eq("id", record_id).execute()
@@ -440,39 +449,51 @@ async def admin_upload_pdf(
             print(f"⚠️ AI Processing failed: {vec_err}")
             return {
                 "status": "partial_success", 
-                "message": "File uploaded to registry, but AI vectorization failed. Check File Manager."
+                "message": "File registered, but AI processing failed."
             }
 
     except Exception as e:
         print(f"❌ Critical Upload Error: {e}")
         return {"status": "error", "message": str(e)}
     finally:
-        # Always delete the local temp file to save disk space
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+
+# --- ENDPOINT: DELETE DOCUMENT ---
 @app.delete("/admin/delete-document/{doc_id}")
 async def delete_document(doc_id: str, filename: str):
     """
-    Performs a 3-way deletion: Storage, Database Registry, and Vector Knowledge.
+    Performs a 3-way deletion: Storage, Registry, and Vector Knowledge.
+    SAFE: It only deletes vectors where source matches the filename.
     """
     try:
+        print(f"🗑️ Targeted Delete Started for: {filename}")
+
         # 1. Delete from Supabase Storage
-        supabase_admin.storage.from_("legal-documents").remove([f"knowledge_base/{filename}"])
+        try:
+            supabase_admin.storage.from_("legal-documents").remove([f"knowledge_base/{filename}"])
+            print("✅ Removed from storage")
+        except:
+            print("⚠️ File not found in storage, continuing...")
 
-        # 2. Delete from compliance_documents (Registry)
+        # 2. Delete from compliance_documents Registry
         supabase_admin.from_("compliance_documents").delete().eq("id", doc_id).execute()
+        print("✅ Removed from registry table")
 
-        # 3. Delete from langchain_pg_embedding (AI Vectors)
-        # We use a direct SQL command to find all chunks where metadata source matches filename
+        # 3. TARGETED DELETE FROM AI MEMORY
+        # This ONLY deletes vectors created by the admin (tagged with this filename)
+        # Your original 'documents' RAG data is 100% safe.
         with psycopg.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM langchain_pg_embedding WHERE cmetadata->>'source' = %s",
                     (filename,)
                 )
+                conn.commit()
+        print("✅ Removed associated vector chunks")
         
-        return {"status": "success", "message": f"Successfully removed {filename} from all systems."}
+        return {"status": "success", "message": f"Successfully wiped {filename}."}
     except Exception as e:
         print(f"❌ Delete Error: {e}")
         return {"status": "error", "message": str(e)}
@@ -559,7 +580,10 @@ async def chat_with_multiple_documents(
 
         # 3. Create the multi-document intelligence prompt
         context_prompt = f"""### ROLE ###
-You are the Lead Trade Compliance Analyst for BridgeAI. Your expertise is in detecting discrepancies across multiple trade documents.
+You are the Lead Trade Compliance Auditor for BridgeAI. Your mission is to provide the EXACT tariff classification and detect discrepancies across trade documents.
+
+### THE DECISION LOGIC (MANDATORY) ###
+You must map the items found in the documents to the EXACT tariff row in our database. Do not just provide a list of options; make a definitive choice based on the evidence.
 
 ### TASK ###
 Analyze the {len(files)} attached documents and answer the user's question. 
@@ -573,14 +597,26 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
 - TARIFFS: Use the SQL tool if the user asks for rates.
 - DISCREPANCIES: If Document A says '10 units' and Document B says '12 units', flag this as a major compliance risk.
 
+### MATCHING PROTOCOL ###
+1. EXTRACT: Identify specific item details from the documents (e.g., 'Used', 'New', 'Engine size', 'Weight', 'Material').
+2. CROSS-CHECK: Compare Document A (Invoice) vs Document B (Bill of Lading). Flag any mismatched quantities or descriptions.
+3. QUERY: Use 'search_structured_database' to get ALL sub-codes for the relevant HS category.
+4. SEMANTIC MAP: Compare the document description to the 'description_fr' in the database.
+   - Example: Document says 'Second hand' -> Map to 'véhicules usagés'.
+   - Example: Document says 'New' -> Map to 'véhicules neufs'.
+5. VERDICT: State exactly which specific code applies and the precise duty rate.
+
+
 ### STRICT CONSTRAINTS ###
 - NO HALLUCINATION: If tools return no data, state you don't have that record.
 - CROSS-CHECK: Always mention which documents you are comparing.
 
 ### OUTPUT FORMAT ###
-1. Start with a direct answer or a '📋 Document Cross-Check Summary'.
-2. Use ⚠️ WARNING for any data mismatches found between files.
-3. List the database tables used for any tariff/legal lookups.
+1. Start with a direct verdict: "🎯 **Target Classification: [HS CODE]**"
+2. Provide the **Reasoning** (Why this row matches the document description).
+3. Provide the **💰 Final Duty Rate**.
+4. Display a professional Markdown Table showing the matching row and 1-2 close alternatives for transparency.
+5. Use ⚠️ WARNING for any data mismatches found between the {len(files)} files.
 
 [USER QUESTION]
 {question}

@@ -80,7 +80,8 @@ def run_rag_agent(question: str, history_str: str):
         "context": format_docs(docs),
         "chat_history": history_str,
         "input": question
-    })
+    }, config={"run_name": "RAG_Legal_Expert"}
+    )
     
     unique_sources = list(set([doc.metadata.get('source', 'Unknown') for doc in docs]))
     return answer, unique_sources
