@@ -200,23 +200,23 @@ export async function clearHistory(sessionId: string) {
 }
 
 // ─────────────────────────────────────────────
-// 6. Vision Chat — POST /chat/vision (SSE stream, multipart/form-data)
-//    Expects: { file: File, question: string, session_id: string }
+// 6. Document Chat — POST /chat/documents (SSE stream, multipart/form-data)
+//    Expects: { files: File[], question: string, session_id: string }
 // ─────────────────────────────────────────────
-export async function streamVisionChat(
-  file: File,
+export async function streamDocumentChat(
+  files: File[],
   question: string,
   sessionId: string,
   callbacks: StreamCallbacks
 ): Promise<void> {
   const formData = new FormData();
-  formData.append('file', file);
+  files.forEach(file => formData.append('files', file));
   formData.append('question', question);
   formData.append('session_id', sessionId);
 
   // NOTE: Do NOT set Content-Type header — the browser must set it automatically
   // so the multipart boundary is included correctly.
-  const res = await fetch(`${API_URL}/chat/vision`, {
+  const res = await fetch(`${API_URL}/chat/documents`, {
     method: 'POST',
     body: formData,
   });
