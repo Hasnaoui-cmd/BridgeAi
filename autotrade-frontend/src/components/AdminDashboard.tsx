@@ -1,7 +1,9 @@
-import { useState, useEffect } from 'react';
-import { ShieldCheck, Users, BookOpen, Trash2, Upload, Loader2, Search, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useCallback } from 'react';
+import { ShieldCheck, Users, BookOpen, Trash2, Upload, Loader2, Search, CheckCircle, AlertTriangle, X, FileText } from 'lucide-react';
+import { motion, AnimatePresence } from 'motion/react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../lib/auth';
+import { API_URL } from '../lib/api';
 
 type Tab = 'users' | 'knowledge';
 
@@ -14,7 +16,7 @@ interface UserProfile {
 }
 
 interface DocumentChunk {
-  uuid: string;
+  id: string;
   document: string | null;
   cmetadata: any;
   collection_id: string | null;
@@ -25,6 +27,18 @@ interface RegistryDocument {
   document_type: string;
   created_at: string;
   storage_url: string;
+  status?: string;
+}
+
+// ─────────────────────────────────────────────
+// Upload Stage Types
+// ─────────────────────────────────────────────
+export type UploadStatus = 'idle' | 'uploading' | 'registering' | 'vectorizing' | 'success' | 'error';
+
+export interface UploadData {
+  filename: string;
+  message?: string;
+  chunks?: number;
 }
 
 export default function AdminDashboard() {
@@ -83,7 +97,7 @@ export default function AdminDashboard() {
         <div className="mt-6">
           {activeTab === 'users' && <UsersTab />}
           {activeTab === 'knowledge' && <KnowledgeBaseTab />}
-          {activeTab === 'registry' && <FileManager />} {/* Add the component here */}
+          {activeTab === 'registry' && <FileManager />}
         </div>
       </div>
     </div>
@@ -127,7 +141,7 @@ function UsersTab() {
     if (!currentUser || targetUserId === currentUser.id) return;
     setProcessingId(targetUserId);
     try {
-      const response = await fetch(`http://localhost:8000/admin/users/${targetUserId}/role`, {
+      const response = await fetch(`${API_URL}/admin/users/${targetUserId}/role`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ role: newRole, admin_id: currentUser.id }),
@@ -135,11 +149,9 @@ function UsersTab() {
       const result = await response.json();
       if (result.status === 'success') {
         setUsers(prev => prev.map(u => u.id === targetUserId ? { ...u, role: newRole } : u));
-      } else {
-        alert('Error: ' + result.message);
       }
     } catch (err) {
-      alert('Failed to connect to backend.');
+      console.error('Role change failed:', err);
     } finally {
       setProcessingId(null);
     }
@@ -157,20 +169,16 @@ function UsersTab() {
     setIsDeleteModalOpen(false);
     setUserToProcess(null);
     setProcessingId(targetUser.id);
-    console.log(`[DEBUG] Attempting to delete Target User ID: ${targetUser.id}`);
-    console.log(`[DEBUG] Authenticated Admin ID sending request: ${currentUser.id}`);
     try {
-      const response = await fetch(`http://localhost:8000/admin/users/${targetUser.id}?admin_id=${currentUser.id}`, {
+      const response = await fetch(`${API_URL}/admin/users/${targetUser.id}?admin_id=${currentUser.id}`, {
         method: 'DELETE',
       });
       const result = await response.json();
       if (response.ok || result.status === 'success') {
         setUsers(prev => prev.filter(u => u.id !== targetUser.id));
-      } else {
-        alert('Error: ' + result.message);
       }
     } catch (err) {
-      alert('Failed to connect to backend.');
+      console.error('Delete failed:', err);
     } finally {
       setProcessingId(null);
     }
@@ -230,7 +238,7 @@ function UsersTab() {
                   </div>
                 </td>
                 <td className="px-6 py-4 text-sm text-stone-600">
-                  {user.email || '—'}
+                  {user.email || '\u2014'}
                 </td>
                 <td className="px-6 py-4">
                   <div className="flex items-center space-x-2">
@@ -255,15 +263,15 @@ function UsersTab() {
                     ? new Date(user.created_at).toLocaleDateString('en-US', {
                       year: 'numeric', month: 'short', day: 'numeric'
                     })
-                    : '—'}
+                    : '\u2014'}
                 </td>
                 <td className="px-6 py-4 text-right">
                   <button
                     onClick={() => handleDeleteUser(user)}
                     disabled={user.id === currentUser?.id || processingId === user.id}
                     className={`p-2 rounded-lg transition-colors ${
-                      user.id === currentUser?.id 
-                        ? 'text-stone-300 cursor-not-allowed' 
+                      user.id === currentUser?.id
+                        ? 'text-stone-300 cursor-not-allowed'
                         : 'text-stone-400 hover:text-red-600 hover:bg-red-50'
                     }`}
                     title={user.id === currentUser?.id ? "Cannot delete yourself" : "Delete user"}
@@ -284,7 +292,7 @@ function UsersTab() {
         )}
       </div>
 
-      {/* ── Delete Confirmation Modal ── */}
+      {/* Delete Confirmation Modal */}
       <DeleteConfirmModal
         isOpen={isDeleteModalOpen}
         user={userToProcess}
@@ -301,7 +309,7 @@ function UsersTab() {
 function KnowledgeBaseTab() {
   const [documents, setDocuments] = useState<DocumentChunk[]>([]);
   const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false); // Track upload status
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     fetchDocuments();
@@ -327,34 +335,29 @@ function KnowledgeBaseTab() {
   const { user } = useAuth();
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || !user) return; // Ensure we have a user ID
+    if (!file || !user) return;
 
     setUploading(true);
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('user_id', user.id); // <--- Add this!
+    formData.append('user_id', user.id);
     formData.append('document_type', 'regulation');
 
-
     try {
-      // Point this to your FastAPI backend
-      const response = await fetch('http://localhost:8000/admin/upload-pdf', {
+      const response = await fetch(`${API_URL}/admin/upload-pdf`, {
         method: 'POST',
         body: formData,
       });
       const result = await response.json();
 
       if (result.status === 'success') {
-        alert(result.message);
-        fetchDocuments(); // Refresh the list to see new chunks!
-      } else {
-        alert('Error: ' + result.message);
+        fetchDocuments();
       }
     } catch (err) {
-      alert('Failed to connect to backend server.');
+      console.error('Upload failed:', err);
     } finally {
       setUploading(false);
-      event.target.value = ''; // Reset input
+      event.target.value = '';
     }
   };
   const handleDelete = async (id: string) => {
@@ -366,10 +369,9 @@ function KnowledgeBaseTab() {
         .eq('id', id);
 
       if (error) throw error;
-      setDocuments(prev => prev.filter(d => d.uuid !== uuid));
+      setDocuments(prev => prev.filter(d => d.id !== id));
     } catch (err) {
       console.error('Failed to delete document:', err);
-      alert('Failed to delete. Check console for details.');
     }
   };
 
@@ -382,7 +384,6 @@ function KnowledgeBaseTab() {
       <div className="flex items-center justify-between">
         <p className="text-sm text-stone-500">{documents.length} chunks</p>
 
-        {/* The Action Button */}
         <label className={`flex items-center space-x-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl px-4 py-2.5 text-sm font-medium transition-all shadow-sm cursor-pointer ${uploading ? 'opacity-50 cursor-wait' : ''}`}>
           {uploading ? <Loader2 size={16} className="animate-spin" /> : <Upload size={16} />}
           <span>{uploading ? 'Vectorizing...' : 'Upload PDF'}</span>
@@ -401,16 +402,13 @@ function KnowledgeBaseTab() {
         {documents.map((doc) => {
           const source = doc.cmetadata?.source || 'Unknown source';
           const page = doc.cmetadata?.page !== undefined ? `Page ${doc.cmetadata.page + 1}` : '';
-          const preview = doc.document
-            ? doc.document.substring(0, 180) + (doc.document.length > 180 ? '...' : '')
-            : 'No content';
+          const preview = doc.document || "No content available";
 
           return (
             <div
               key={doc.id}
               className="bg-white rounded-2xl border border-stone-200 p-5 shadow-sm hover:shadow transition-shadow group"
             >
-              {/* Header */}
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center space-x-2 min-w-0">
                   <div className="p-1.5 bg-stone-100 rounded-lg flex-shrink-0">
@@ -429,12 +427,10 @@ function KnowledgeBaseTab() {
                 </button>
               </div>
 
-              {/* Content Preview */}
               <p className="text-sm text-stone-600 leading-relaxed line-clamp-4 mb-3">
-                {preview}
+                {doc.document ? (doc.document?.substring(0, 180) + (doc.document.length > 180 ? '...' : '')) : preview}
               </p>
 
-              {/* Footer */}
               <div className="flex items-center justify-between pt-3 border-t border-stone-100">
                 {page && (
                   <span className="text-xs text-stone-400 bg-stone-50 px-2 py-0.5 rounded">
@@ -442,7 +438,7 @@ function KnowledgeBaseTab() {
                   </span>
                 )}
                 <span className="text-xs text-stone-300 font-mono">
-                  {doc.id.substring(0, 8)}...
+                  {doc.id ? doc.id.substring(0, 8) : '...'}
                 </span>
               </div>
             </div>
@@ -487,18 +483,254 @@ function LoadingSkeleton({ rows = 4 }: { rows?: number }) {
   );
 }
 
+// ─────────────────────────────────────────────
+// Floating Upload Progress Card
+// ─────────────────────────────────────────────
+const STAGES: { key: UploadStage; label: string; note?: string }[] = [
+  { key: 'uploading', label: 'Uploading physical file to storage...' },
+  { key: 'registering', label: 'Registering document in database...' },
+  { key: 'vectorizing', label: 'AI Processing (Llama-Parse)...', note: 'This may take up to 1 minute' },
+];
 
-//lists the contents of the compliance_documents table
+function UploadProgressCard({ stage, filename }: { stage: UploadStage; filename: string }) {
+  if (!stage) return null;
 
+  const currentIndex = STAGES.findIndex(s => s.key === stage);
+  const progress = stage === 'uploading' ? 20 : stage === 'registering' ? 50 : 80;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 40, scale: 0.95 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: 40, scale: 0.95 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+      className="fixed bottom-6 right-6 z-50 w-96 bg-white/90 backdrop-blur-md border border-stone-200 rounded-2xl shadow-2xl p-5"
+    >
+      {/* Header */}
+      <div className="flex items-center space-x-3 mb-4">
+        <div className="w-9 h-9 rounded-xl bg-amber-100 flex items-center justify-center">
+          <Loader2 size={18} className="text-amber-600 animate-spin" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-semibold text-stone-800 truncate">{filename}</p>
+          <p className="text-xs text-stone-400">Processing document...</p>
+        </div>
+      </div>
+
+      {/* Progress Bar */}
+      <div className="w-full h-2 bg-stone-100 rounded-full overflow-hidden mb-4">
+        <motion.div
+          className="h-full bg-gradient-to-r from-amber-400 to-amber-600 rounded-full"
+          initial={{ width: '0%' }}
+          animate={{ width: `${progress}%` }}
+          transition={{ duration: 0.6, ease: 'easeOut' }}
+        />
+      </div>
+
+      {/* Stages */}
+      <div className="space-y-2.5">
+        {STAGES.map((s, i) => {
+          const isActive = i === currentIndex;
+          const isComplete = i < currentIndex;
+
+          return (
+            <div key={s.key} className="flex items-start space-x-3">
+              {/* Stage indicator */}
+              <div className="flex-shrink-0 mt-0.5">
+                {isComplete ? (
+                  <div className="w-5 h-5 rounded-full bg-emerald-100 flex items-center justify-center">
+                    <CheckCircle size={12} className="text-emerald-600" />
+                  </div>
+                ) : isActive ? (
+                  <div className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center">
+                    <Loader2 size={12} className="text-amber-600 animate-spin" />
+                  </div>
+                ) : (
+                  <div className="w-5 h-5 rounded-full bg-stone-100 border border-stone-200" />
+                )}
+              </div>
+
+              {/* Stage text */}
+              <div className="min-w-0 flex-1">
+                <p className={`text-xs leading-relaxed ${
+                  isActive ? 'text-stone-800 font-medium' : isComplete ? 'text-stone-400' : 'text-stone-300'
+                }`}>
+                  {s.label}
+                </p>
+                {s.note && isActive && (
+                  <p className="text-[10px] text-amber-600 mt-0.5">{s.note}</p>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </motion.div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// Notification Modal (Success / Error)
+// ─────────────────────────────────────────────
+function NotificationModal({
+  result,
+  onDismiss,
+  onRetry,
+  onViewKnowledge,
+}: {
+  result: UploadResult | null;
+  onDismiss: () => void;
+  onRetry?: () => void;
+  onViewKnowledge?: () => void;
+}) {
+  if (!result) return null;
+
+  const isSuccess = result.type === 'success';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" aria-modal="true" role="dialog">
+      {/* Glassmorphic overlay */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-stone-900/30 backdrop-blur-md"
+        onClick={onDismiss}
+      />
+
+      {/* Modal card */}
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        className="relative bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl border border-stone-200 w-full max-w-md p-8"
+      >
+        {/* Close button */}
+        <button
+          onClick={onDismiss}
+          className="absolute top-4 right-4 p-1.5 rounded-lg text-stone-300 hover:text-stone-600 hover:bg-stone-100 transition-colors"
+        >
+          <X size={16} />
+        </button>
+
+        {/* Icon */}
+        <div className="flex justify-center mb-5">
+          <motion.div
+            initial={{ scale: 0 }}
+            animate={{ scale: 1 }}
+            transition={{ type: 'spring', stiffness: 500, damping: 20, delay: 0.1 }}
+            className={`w-16 h-16 rounded-full flex items-center justify-center ${
+              isSuccess ? 'bg-emerald-100' : 'bg-red-100'
+            }`}
+          >
+            {isSuccess ? (
+              <CheckCircle size={32} className="text-emerald-600" />
+            ) : (
+              <AlertTriangle size={32} className="text-red-600" />
+            )}
+          </motion.div>
+        </div>
+
+        {/* Heading */}
+        <h3 className="text-xl font-semibold text-stone-900 text-center mb-2">
+          {isSuccess ? 'Document Ingested Successfully' : 'Upload Failed'}
+        </h3>
+
+        {/* Description */}
+        <p className="text-sm text-stone-500 text-center leading-relaxed mb-2">
+          {isSuccess ? (
+            <>
+              <span className="font-semibold text-stone-800">{result.filename}</span> has been processed and added to the knowledge base.
+            </>
+          ) : (
+            result.message
+          )}
+        </p>
+
+        {/* Chunk count for success */}
+        {isSuccess && result.chunks && (
+          <div className="flex justify-center mb-6">
+            <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
+              {result.chunks} chunks stored in vector database
+            </span>
+          </div>
+        )}
+
+        {/* Error filename */}
+        {!isSuccess && (
+          <div className="flex justify-center mb-6">
+            <span className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-stone-50 text-stone-500 border border-stone-200">
+              File: {result.filename}
+            </span>
+          </div>
+        )}
+
+        {/* Buttons */}
+        <div className="flex space-x-3">
+          {isSuccess ? (
+            <>
+              <button
+                onClick={onDismiss}
+                className="flex-1 px-4 py-3 rounded-2xl text-sm font-medium text-stone-700 bg-stone-100 hover:bg-stone-200 transition-colors"
+              >
+                Done
+              </button>
+              {onViewKnowledge && (
+                <button
+                  onClick={onViewKnowledge}
+                  className="flex-1 px-4 py-3 rounded-2xl text-sm font-semibold text-white bg-amber-600 hover:bg-amber-700 transition-colors shadow-sm"
+                >
+                  View in Knowledge Base
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <button
+                onClick={onDismiss}
+                className="flex-1 px-4 py-3 rounded-2xl text-sm font-medium text-stone-700 bg-stone-100 hover:bg-stone-200 transition-colors"
+              >
+                Dismiss
+              </button>
+              {onRetry && (
+                <button
+                  onClick={onRetry}
+                  className="flex-1 px-4 py-3 rounded-2xl text-sm font-semibold text-white bg-red-600 hover:bg-red-700 transition-colors shadow-sm"
+                >
+                  Retry Upload
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────
+// File Manager — Registry-First Upload with Status Tracking
+// ─────────────────────────────────────────────
 function FileManager() {
+  const { user } = useAuth();
   const [files, setFiles] = useState<RegistryDocument[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Upload progress state
+  const [uploadStage, setUploadStage] = useState<UploadStage>(null);
+  const [uploadFilename, setUploadFilename] = useState('');
+  const [uploadResult, setUploadResult] = useState<UploadResult | null>(null);
+  const [lastFile, setLastFile] = useState<File | null>(null);
+
+  const isVectorizing = uploadStage === 'vectorizing';
 
   useEffect(() => {
     fetchFiles();
   }, []);
 
   const fetchFiles = async () => {
+    setLoading(true);
     const { data, error } = await supabase
       .from('compliance_documents')
       .select('*')
@@ -508,55 +740,271 @@ function FileManager() {
     setLoading(false);
   };
 
+  const getAuthHeaders = async (): Promise<HeadersInit> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers: HeadersInit = {};
+    if (session?.access_token) {
+      headers['Authorization'] = `Bearer ${session.access_token}`;
+    }
+    return headers;
+  };
+
+  const handleFileUpload = useCallback(async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !user) return;
+
+    setLastFile(file);
+    setUploadFilename(file.filename || file.name);
+    setUploadResult(null);
+
+    // Stage 1: Uploading
+    setUploadStage('uploading');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('user_id', user.id);
+    formData.append('document_type', 'regulation');
+
+    try {
+      const authHeaders = await getAuthHeaders();
+
+      // Simulate slight delay for UX (file is being sent over network)
+      await new Promise(r => setTimeout(r, 600));
+
+      // Stage 2: Registering
+      setUploadStage('registering');
+      await new Promise(r => setTimeout(r, 400));
+
+      // Stage 3: Vectorizing (the long part — the backend does all 3 internally)
+      setUploadStage('vectorizing');
+
+      const response = await fetch(`${API_URL}/admin/upload-pdf`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: formData,
+      });
+
+      if (!response.ok) {
+        throw new Error(`Server responded with ${response.status}: ${response.statusText}`);
+      }
+
+      const result = await response.json();
+
+      if (result.status === 'success') {
+        const chunkMatch = result.message?.match(/(\d+)\s*chunks/);
+        setUploadResult({
+          type: 'success',
+          filename: file.name,
+          message: result.message,
+          chunks: chunkMatch ? parseInt(chunkMatch[1]) : undefined,
+        });
+      } else if (result.status === 'partial_success') {
+        setUploadResult({
+          type: 'success',
+          filename: file.name,
+          message: 'File registered. AI processing continues in background.',
+        });
+      } else {
+        setUploadResult({
+          type: 'error',
+          filename: file.name,
+          message: result.message || 'An unknown error occurred during upload.',
+        });
+      }
+    } catch (err: any) {
+      setUploadResult({
+        type: 'error',
+        filename: file.name,
+        message: err.message || 'Failed to connect to the backend server.',
+      });
+    } finally {
+      setUploadStage(null);
+      event.target.value = '';
+      fetchFiles();
+    }
+  }, [user]);
+
+  const handleRetry = useCallback(() => {
+    setUploadResult(null);
+    // Trigger the file input again
+    const input = document.getElementById('fm-file-input') as HTMLInputElement;
+    if (input) input.click();
+  }, []);
+
   const handleDeleteFile = async (filename: string, docId: string) => {
     if (!confirm(`Warning: This will delete the file, the registry record, AND all AI vectors for "${filename}". Continue?`)) return;
 
     try {
-      // Call your backend to handle the multi-stage deletion
-      const response = await fetch(`http://localhost:8000/admin/delete-document/${docId}?filename=${filename}`, {
-        method: 'DELETE'
-      });
+      const authHeaders = await getAuthHeaders();
+      const response = await fetch(
+        `${API_URL}/admin/delete-document/${docId}?filename=${encodeURIComponent(filename)}`,
+        { method: 'DELETE', headers: authHeaders }
+      );
 
       if (response.ok) {
         setFiles(prev => prev.filter(f => f.id !== docId));
-        alert('File and all AI vectors deleted successfully.');
       }
     } catch (err) {
-      alert('Delete failed.');
+      console.error('Delete failed:', err);
     }
   };
 
+  const getStatusBadge = (status?: string) => {
+    const s = status || 'Completed';
+    if (s === 'Completed') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-700 border border-emerald-200">
+          <CheckCircle size={11} /> Ready
+        </span>
+      );
+    }
+    if (s === 'Vectorizing...') {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg bg-amber-50 text-amber-700 border border-amber-200 animate-pulse">
+          <Loader2 size={11} className="animate-spin" /> Vectorizing
+        </span>
+      );
+    }
+    if (s.toLowerCase().includes('error')) {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-lg bg-red-50 text-red-700 border border-red-200">
+          <AlertTriangle size={11} /> Failed
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center text-xs font-medium px-2.5 py-1 rounded-lg bg-stone-50 text-stone-500 border border-stone-200">
+        {s}
+      </span>
+    );
+  };
+
+  if (loading) {
+    return <LoadingSkeleton rows={4} />;
+  }
+
   return (
-    <div className="bg-white rounded-2xl border border-stone-200 shadow-sm mt-8">
-      <div className="p-4 border-b border-stone-100 font-medium">Registry: Uploaded Files</div>
-      <table className="w-full text-sm text-left">
-        <thead className="bg-stone-50 text-stone-500 uppercase text-xs">
-          <tr>
-            <th className="px-6 py-3">File Name</th>
-            <th className="px-6 py-3">Type</th>
-            <th className="px-6 py-3">Uploaded At</th>
-            <th className="px-6 py-3 text-right">Actions</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-stone-100">
-          {files.map(file => (
-            <tr key={file.id} className="hover:bg-stone-50 transition-colors">
-              <td className="px-6 py-4 font-medium">{file.document_name}</td>
-              <td className="px-6 py-4 text-stone-500">{file.document_type}</td>
-              <td className="px-6 py-4 text-stone-500">{new Date(file.created_at).toLocaleDateString()}</td>
-              <td className="px-6 py-4 text-right">
-                <button
-                  onClick={() => handleDeleteFile(file.document_name, file.id)}
-                  className="p-2 text-stone-400 hover:text-red-600 transition-colors"
+    <>
+      <div className="space-y-6">
+        {/* Header with Upload Button */}
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-medium text-stone-800">File Manager</h3>
+            <p className="text-sm text-stone-500 mt-0.5">{files.length} document{files.length !== 1 ? 's' : ''} registered</p>
+          </div>
+          <label className={`flex items-center space-x-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl px-4 py-2.5 text-sm font-medium transition-all shadow-sm cursor-pointer ${uploadStage ? 'opacity-50 cursor-wait pointer-events-none' : ''}`}>
+            <Upload size={16} />
+            <span>Upload PDF</span>
+            <input
+              id="fm-file-input"
+              type="file"
+              accept=".pdf"
+              className="hidden"
+              onChange={handleFileUpload}
+              disabled={!!uploadStage}
+            />
+          </label>
+        </div>
+
+        {/* Table or Empty State */}
+        {files.length === 0 && !isVectorizing ? (
+          <div className="text-center py-20 bg-white rounded-3xl border border-stone-200 shadow-sm">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-stone-100 flex items-center justify-center">
+              <BookOpen size={28} className="text-stone-300" />
+            </div>
+            <p className="text-stone-600 font-medium text-lg">No documents registered in the system</p>
+            <p className="text-stone-400 text-sm mt-1.5 max-w-sm mx-auto">
+              Upload a PDF to add it to the compliance knowledge base. Documents will be vectorized automatically for AI retrieval.
+            </p>
+          </div>
+        ) : (
+          <div className="relative">
+            {/* Busy overlay during vectorization */}
+            <AnimatePresence>
+              {isVectorizing && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 z-10 bg-white/60 backdrop-blur-[2px] rounded-3xl flex items-center justify-center"
                 >
-                  <Trash2 size={16} />
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+                  <div className="flex items-center space-x-3 bg-white/90 backdrop-blur-md border border-stone-200 rounded-2xl px-6 py-4 shadow-lg">
+                    <Loader2 size={18} className="text-amber-600 animate-spin" />
+                    <p className="text-sm font-medium text-stone-700">Updating Knowledge Base... file will appear shortly.</p>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
+            <div className="bg-white rounded-3xl border border-stone-200 shadow-sm overflow-hidden">
+              <table className="w-full text-sm text-left">
+                <thead>
+                  <tr className="border-b border-stone-100">
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-stone-400 uppercase tracking-wider">File Name</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-stone-400 uppercase tracking-wider">Type</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-stone-400 uppercase tracking-wider">Uploaded At</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-stone-400 uppercase tracking-wider">Status</th>
+                    <th className="text-right px-6 py-3.5 text-xs font-semibold text-stone-400 uppercase tracking-wider">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-stone-50">
+                  {files.map(file => (
+                    <tr key={file.id} className="hover:bg-stone-50/50 transition-colors group">
+                      <td className="px-6 py-4">
+                        <span className="font-medium text-stone-800">{file.document_name}</span>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="text-xs font-medium text-stone-500 bg-stone-100 px-2 py-0.5 rounded capitalize">{file.document_type}</span>
+                      </td>
+                      <td className="px-6 py-4 text-stone-600">
+                        {new Date(file.created_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}
+                      </td>
+                      <td className="px-6 py-4">
+                        {getStatusBadge(file.status)}
+                      </td>
+                      <td className="px-6 py-4 text-right">
+                        <button
+                          onClick={() => handleDeleteFile(file.document_name, file.id)}
+                          className="p-2 rounded-lg text-stone-300 hover:text-red-600 hover:bg-red-50 transition-colors opacity-0 group-hover:opacity-100"
+                          title="Delete document"
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Floating Progress Card */}
+      <AnimatePresence>
+        {uploadStage && (
+          <UploadProgressCard stage={uploadStage} filename={uploadFilename} />
+        )}
+      </AnimatePresence>
+
+      {/* Success / Error Modal */}
+      <AnimatePresence>
+        {uploadResult && (
+          <NotificationModal
+            result={uploadResult}
+            onDismiss={() => {
+              setUploadResult(null);
+              fetchFiles();
+            }}
+            onRetry={uploadResult.type === 'error' ? handleRetry : undefined}
+            onViewKnowledge={uploadResult.type === 'success' ? () => {
+              setUploadResult(null);
+              fetchFiles();
+            } : undefined}
+          />
+        )}
+      </AnimatePresence>
+    </>
   );
 }
 
@@ -580,20 +1028,26 @@ function DeleteConfirmModal({ isOpen, user, onCancel, onConfirm }: DeleteConfirm
       role="dialog"
     >
       {/* Blurred overlay */}
-      <div
-        className="absolute inset-0 bg-stone-900/40 backdrop-blur-sm"
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        className="absolute inset-0 bg-stone-900/40 backdrop-blur-md"
         onClick={onCancel}
       />
 
       {/* Modal card */}
-      <div className="relative bg-white rounded-3xl shadow-2xl border border-stone-200 w-full max-w-md p-8 animate-in fade-in zoom-in-95 duration-200">
-
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9, y: 20 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 20 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 30 }}
+        className="relative bg-white/95 backdrop-blur-md rounded-3xl shadow-2xl border border-stone-200 w-full max-w-md p-8"
+      >
         {/* Red warning icon */}
         <div className="flex justify-center mb-5">
           <div className="w-16 h-16 rounded-full bg-red-100 flex items-center justify-center">
-            <svg xmlns="http://www.w3.org/2000/svg" className="w-8 h-8 text-red-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
-            </svg>
+            <AlertTriangle size={32} className="text-red-600" />
           </div>
         </div>
 
@@ -608,7 +1062,7 @@ function DeleteConfirmModal({ isOpen, user, onCancel, onConfirm }: DeleteConfirm
           <span className="font-semibold text-stone-800">
             {user.full_name || user.email}
           </span>
-          's account.
+          &apos;s account.
         </p>
         <p className="text-xs text-red-500 text-center mb-7">
           This will remove them from authentication and all associated data. This action cannot be undone.
@@ -643,7 +1097,7 @@ function DeleteConfirmModal({ isOpen, user, onCancel, onConfirm }: DeleteConfirm
             Delete Account
           </button>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }
