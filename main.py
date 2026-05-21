@@ -12,8 +12,9 @@ from orchestrator import stream_orchestrator
 from supabase import create_client
 from supabase_client import supabase_admin
 import shutil
+import re
 from ingestion import process_pdf_to_vectors
-from vision_agent import extract_invoice_data
+from vision_agent import extract_data_from_file
 from routers.prediction import router as prediction_router
 import warnings
 from contextlib import asynccontextmanager
@@ -396,69 +397,154 @@ async def get_user_sessions(user_id: str):
 @app.post("/admin/upload-pdf")
 async def admin_upload_pdf(
     file: UploadFile = File(...), 
-    user_id: str = Form(...), # Pass this from the frontend
+    user_id: str = Form(...), 
     document_type: str = Form("regulation")
 ):
-    temp_path = f"temp_{file.filename}"
+    # 1. SANITIZE FILENAME (Fixes the 'Invalid Key' and 'Broken View' errors)
+    # Replaces spaces and special characters with underscores
+    clean_name = re.sub(r'[^a-zA-Z0-9.]', '_', file.filename)
+    
+    temp_path = f"temp_{clean_name}"
     with open(temp_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
-
-    try:
-        # 1. Upload to Supabase Storage (The physical file)
-        storage_path = f"knowledge_base/{file.filename}"
-        with open(temp_path, "rb") as f:
-            supabase_admin.storage.from_("legal-documents").upload(storage_path, f)
         
-        # Get the public URL for the record
+    try:
+        # STEP 1: Upload to Supabase Storage using the CLEAN name
+        storage_path = f"knowledge_base/{clean_name}"
+        with open(temp_path, "rb") as f_data:
+            supabase_admin.storage.from_("legal-documents").upload(
+                path=storage_path, 
+                file=f_data, 
+                file_options={
+                    "upsert": "true",
+                    "content-type": "application/pdf"
+                }
+            )
+        
+        # Get the actual public URL from Supabase
         storage_url = supabase_admin.storage.from_("legal-documents").get_public_url(storage_path)
 
-        # 2. Vectorize for the RAG Agent (The AI knowledge)
-        num_chunks = process_pdf_to_vectors(temp_path, file.filename)
-
-        # 3. Register in compliance_documents (The Management record)
-        # This allows the Admin to see the file in their list!
+        # STEP 2: REGISTER IN DATABASE Registry
+        # We store the 'clean_name' so the Delete function can find it later
         doc_record = {
             "user_id": user_id,
-            "document_name": file.filename,
+            "document_name": clean_name, 
             "document_type": document_type,
-            "storage_url": storage_url,
+            "storage_url": str(storage_url),
+            "status": "Vectorizing..." 
         }
-        print(f"📝 Attempting to register {file.filename} for user {user_id}...")
-        res = supabase_admin.from_("compliance_documents").insert(doc_record).execute()
-        print(f"✅ Registry response: {res}")
+        
+        print(f"📝 Pre-registering {clean_name} in database...")
+        registry_res = supabase_admin.from_("compliance_documents").upsert(
+            doc_record, on_conflict="document_name"
+        ).execute()
+        
+        record_id = registry_res.data[0]['id']
 
-        return {
-            "status": "success", 
-            "message": f"Ingested {file.filename}. {num_chunks} chunks added to AI memory."
-        }
+        # STEP 3: PERFORM VECTORIZATION (Slow AI Step)
+        try:
+            # We pass the clean_name as the 'source' for the vector metadata
+            num_chunks = process_pdf_to_vectors(temp_path, clean_name)
+            
+            # STEP 4: UPDATE STATUS TO COMPLETED
+            supabase_admin.from_("compliance_documents").update({
+                "status": "Completed"
+            }).eq("id", record_id).execute()
+            
+            print(f"✅ Success: {clean_name} ({num_chunks} chunks)")
+            return {
+                "status": "success", 
+                "message": f"Ingested {clean_name}. {num_chunks} chunks stored."
+            }
+
+        except Exception as vec_err:
+            supabase_admin.from_("compliance_documents").update({
+                "status": "Error during vectorization"
+            }).eq("id", record_id).execute()
+            
+            print(f"⚠️ AI Processing failed: {vec_err}")
+            return {
+                "status": "partial_success", 
+                "message": "File registered, but AI processing failed."
+            }
+
     except Exception as e:
+        print(f"❌ Critical Upload Error: {e}")
         return {"status": "error", "message": str(e)}
     finally:
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+
+@app.delete("/admin/users/{target_user_id}")
+async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is optional for safety
+    try:
+        print(f"📡 Request to delete user: {target_user_id} by admin: {admin_id}")
+
+        # 1. Security check (Only if admin_id is provided)
+        if admin_id:
+            role = get_user_role_from_id(admin_id)
+            if role != "admin":
+                return {"status": "error", "message": "Unauthorized: Admin access required."}
+
+        # 2. Delete from user_profiles table FIRST
+        # This clears your local data so the UI updates immediately
+        try:
+            supabase_admin.from_("user_profiles").delete().eq("id", target_user_id).execute()
+            print("✅ Removed from user_profiles table")
+        except Exception as e:
+            print(f"⚠️ Table delete warning: {e}")
+
+        # 3. Delete from Supabase Auth (The login account)
+        # We wrap this in another try/except so if the user is already gone from Auth,
+        # we still return "Success" to the frontend.
+        try:
+            supabase_admin.auth.admin.delete_user(target_user_id)
+            print("✅ Removed from Supabase Auth")
+        except Exception as auth_err:
+            # "User not found" usually happens here. We ignore it and stay successful.
+            print(f"ℹ️ Auth delete info (User might already be gone): {auth_err}")
+
+        return {"status": "success", "message": "User account and profile cleared."}
+
+    except Exception as e:
+        print(f"❌ Critical Delete Error: {e}")
+        return {"status": "error", "message": str(e)}
+
+# --- ENDPOINT: DELETE DOCUMENT ---
 @app.delete("/admin/delete-document/{doc_id}")
 async def delete_document(doc_id: str, filename: str):
     """
-    Performs a 3-way deletion: Storage, Database Registry, and Vector Knowledge.
+    Performs a 3-way deletion: Storage, Registry, and Vector Knowledge.
+    SAFE: It only deletes vectors where source matches the filename.
     """
     try:
+        print(f"🗑️ Targeted Delete Started for: {filename}")
+
         # 1. Delete from Supabase Storage
-        supabase_admin.storage.from_("legal-documents").remove([f"knowledge_base/{filename}"])
+        try:
+            supabase_admin.storage.from_("legal-documents").remove([f"knowledge_base/{filename}"])
+            print("✅ Removed from storage")
+        except:
+            print("⚠️ File not found in storage, continuing...")
 
-        # 2. Delete from compliance_documents (Registry)
+        # 2. Delete from compliance_documents Registry
         supabase_admin.from_("compliance_documents").delete().eq("id", doc_id).execute()
+        print("✅ Removed from registry table")
 
-        # 3. Delete from langchain_pg_embedding (AI Vectors)
-        # We use a direct SQL command to find all chunks where metadata source matches filename
+        # 3. TARGETED DELETE FROM AI MEMORY
+        # This ONLY deletes vectors created by the admin (tagged with this filename)
+        # Your original 'documents' RAG data is 100% safe.
         with psycopg.connect(DATABASE_URL) as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     "DELETE FROM langchain_pg_embedding WHERE cmetadata->>'source' = %s",
                     (filename,)
                 )
+                conn.commit()
+        print("✅ Removed associated vector chunks")
         
-        return {"status": "success", "message": f"Successfully removed {filename} from all systems."}
+        return {"status": "success", "message": f"Successfully wiped {filename}."}
     except Exception as e:
         print(f"❌ Delete Error: {e}")
         return {"status": "error", "message": str(e)}
@@ -466,7 +552,6 @@ async def delete_document(doc_id: str, filename: str):
 class UpdateRoleRequest(BaseModel):
     role: str
     admin_id: str
-
 @app.patch("/admin/users/{target_user_id}/role")
 async def update_user_role(target_user_id: str, request: UpdateRoleRequest):
     try:
@@ -514,41 +599,91 @@ async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is 
     except Exception as e:
         print(f"❌ Critical Delete Error: {e}")
         return {"status": "error", "message": str(e)}
-
-
-
-@app.post("/chat/vision")
-async def chat_with_vision(
-    file: UploadFile = File(...),
+@app.post("/chat/documents")
+async def chat_with_multiple_documents(
+    files: list[UploadFile] = File(...), 
     question: str = Form(...),
     session_id: str = Form(...)
 ):
     try:
-        image_bytes = await file.read()
-        invoice_json = extract_invoice_data(image_bytes)
+        all_docs_data = []
         
-        context_prompt = f"""
-        [DOCUMENT CONTEXT]
-        Data extracted from invoice: {json.dumps(invoice_json)}
-        [USER QUESTION]
-        {question}
-        """
-        # 1. Get the actual role (Admin or User)
+        # 1. Process all uploaded files (Images or PDFs)
+        for file in files:
+            file_bytes = await file.read()
+            # This handles Llama-Parse for PDFs and Groq Vision for Images
+            doc_json = await extract_data_from_file(file_bytes, file.filename)
+            all_docs_data.append({
+                "filename": file.filename,
+                "extracted_data": doc_json
+            })
+
+        # 2. Construct the aggregated comparison context
+        context_parts = []
+        for i, doc in enumerate(all_docs_data):
+            context_parts.append(f"DOCUMENT {i+1} (Filename: {doc['filename']}):\n{json.dumps(doc['extracted_data'], indent=2)}")
+        
+        multi_doc_context = "\n\n---\n\n".join(context_parts)
+
+        # 3. Create the multi-document intelligence prompt
+        context_prompt = f"""### ROLE ###
+You are the Lead Trade Compliance Auditor for BridgeAI. Your mission is to provide the EXACT tariff classification and detect discrepancies across trade documents.
+
+### THE DECISION LOGIC (MANDATORY) ###
+You must map the items found in the documents to the EXACT tariff row in our database. Do not just provide a list of options; make a definitive choice based on the evidence.
+
+### TASK ###
+Analyze the {len(files)} attached documents and answer the user's question. 
+If the user asks to 'find risks' or 'check consistency', compare the data points between all documents (e.g., check if the weight on the Invoice matches the Bill of Lading).
+
+### DOCUMENT CONTEXT (EXTRACTED DATA) ###
+{multi_doc_context}
+
+### DOMAIN-SPECIFIC KNOWLEDGE ###
+- HS CODES: Treat as strings. Check if they match across documents.
+- TARIFFS: Use the SQL tool if the user asks for rates.
+- DISCREPANCIES: If Document A says '10 units' and Document B says '12 units', flag this as a major compliance risk.
+
+### MATCHING PROTOCOL ###
+1. EXTRACT: Identify specific item details from the documents (e.g., 'Used', 'New', 'Engine size', 'Weight', 'Material').
+2. CROSS-CHECK: Compare Document A (Invoice) vs Document B (Bill of Lading). Flag any mismatched quantities or descriptions.
+3. QUERY: Use 'search_structured_database' to get ALL sub-codes for the relevant HS category.
+4. SEMANTIC MAP: Compare the document description to the 'description_fr' in the database.
+   - Example: Document says 'Second hand' -> Map to 'véhicules usagés'.
+   - Example: Document says 'New' -> Map to 'véhicules neufs'.
+5. VERDICT: State exactly which specific code applies and the precise duty rate.
+
+
+### STRICT CONSTRAINTS ###
+- NO HALLUCINATION: If tools return no data, state you don't have that record.
+- CROSS-CHECK: Always mention which documents you are comparing.
+
+### OUTPUT FORMAT ###
+1. Start with a direct verdict: "🎯 **Target Classification: [HS CODE]**"
+2. Provide the **Reasoning** (Why this row matches the document description).
+3. Provide the **💰 Final Duty Rate**.
+4. Display a professional Markdown Table showing the matching row and 1-2 close alternatives for transparency.
+5. Use ⚠️ WARNING for any data mismatches found between the {len(files)} files.
+
+[USER QUESTION]
+{question}
+"""
+        # 4. Role lookup for correct history badge
         user_id = session_id.split("___")[0]
         actual_role = get_user_role_from_id(user_id)
 
-        # 2. SAVE USER MESSAGE IMMEDIATELY
-        save_message(session_id, actual_role, f"📸 [Invoice Attached] {question}")
-
+        # 5. SAVE USER MESSAGE with file manifest
+        filenames = ", ".join([f.filename for f in files])
+        save_message(session_id, actual_role, f"📑 [Attached {len(files)} files: {filenames}] {question}")
+     
+        # 6. Fetch history context
         past_messages = get_session_history(session_id)
         recent_context = past_messages[-10:] if len(past_messages) > 10 else past_messages
 
         async def stream_and_persist():
             full_ai_answer = ""
             
-            # The orchestrator handles the tools (SQL/RAG) and gives us the tokens
             async for chunk in stream_orchestrator(context_prompt, recent_context):
-                # We need to extract the raw text from the SSE 'token' chunks
                 if "data: " in chunk:
                     for line in chunk.split('\n'):
                         if line.startswith("data: "):
@@ -560,29 +695,34 @@ async def chat_with_vision(
                                 pass
                 yield chunk
 
-            # 3. SAVE AI MESSAGE AFTER STREAM COMPLETES
+            # 7. Final Persistence
             if full_ai_answer.strip():
-                # Save to History
+                # Save AI answer to chat history
                 save_message(session_id, "ai", full_ai_answer)
                 
-                # Save to Risk Dashboard (Capture High/Low Risk)
-                user_id = session_id.split("___")[0]
-                risk_keywords = ["warning", "risk", "mismatch", "error", "caution", "alert", "danger"]
+                # Auto-Log Risk if AI mentions danger/mismatch
+                risk_keywords = ["warning", "risk", "mismatch", "error", "caution", "alert", "danger", "discrepancy"]
                 status = "High Risk" if any(w in full_ai_answer.lower() for w in risk_keywords) else "Low Risk"
                 
                 try:
                     supabase_admin.from_("compliance_screenings").insert({
                         "user_id": user_id,
                         "session_id": session_id,
-                        "screening_type": "Invoice Multi-modal Audit",
+                        "screening_type": f"Multi-Doc Audit ({len(files)} files)",
                         "status": status,
-                        "ai_analysis_notes": full_ai_answer[:1000]
+                        "ai_analysis_notes": full_ai_answer[:1200]
                     }).execute()
+                    print(f"✅ Multi-doc risk logged: {status}")
                 except Exception as e:
                     print(f"⚠️ Risk Log Error: {e}")
 
-        return StreamingResponse(stream_and_persist(), media_type="text/event-stream")
+        return StreamingResponse(
+            stream_and_persist(), 
+            media_type="text/event-stream",
+            headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"}
+        )
 
     except Exception as e:
-        print(f"❌ Vision Endpoint Error: {e}")
+        print(f"❌ Multi-Doc Endpoint Error: {e}")
         return {"error": str(e)}
+

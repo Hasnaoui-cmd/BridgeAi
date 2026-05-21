@@ -77,8 +77,23 @@ async def stream_orchestrator(question: str, past_messages: list):
         or explicitly asks for numeric tariff rates, taxes, duties, or inventory data.
         DO NOT use this tool for general questions about customs procedures, definitions,
         or how things work. This tool queries a SQL database with structured numeric data.
+        USE THIS TOOL for: 
+        1. Numerical data (tariffs, tax rates).
+        2. PRODUCT DEFINITIONS/DESCRIPTIONS for specific HS Codes. 
+        If the user asks 'What is HS 8703?' or 'What does this code stand for?', 
+        use this tool to check the 'description_fr' in the tariffs table.
         """
-        pass
+        # 1. Check if the query looks like an HS code (contains numbers)
+        if any(char.isdigit() for char in search_query):
+            # Strip dots and spaces ONLY for codes
+            clean_query = search_query.replace(".", "").replace(" ", "")
+        else:
+            # Keep spaces for names like "electric motors"
+            clean_query = search_query
+        
+        # We force a command that the SQL Agent understands perfectly
+        task = f"Find the hs_code, description_fr, and import_duty_rate for HS Code prefix {clean_query} in the morocco_tariffs table."
+        return run_sql_agent(task)
 
     @tool
     def search_legal_documents(search_query: str) -> str:
@@ -89,7 +104,8 @@ async def stream_orchestrator(question: str, past_messages: list):
         Use this when the query is conceptual, process-oriented, or asks about how
         something works. This tool searches legal PDFs and regulatory documents.
         """
-        pass
+        # Placeholder implementation - replace with actual RAG agent logic
+        return run_rag_agent(search_query, history_str)
 
     tools = [search_structured_database, search_legal_documents]
     llm_with_tools = llm.bind_tools(tools)
@@ -226,7 +242,7 @@ async def stream_orchestrator(question: str, past_messages: list):
     # --- E. EXECUTE AS A REAL-TIME STREAM ---
     try:
         # astream_events lets us watch the AI as it works, step by step!
-        async for event in app.astream_events(initial_state, version="v2"):
+        async for event in app.astream_events(initial_state, version="v2",config={"run_name": "Master_orchestrator"}):
             kind = event["event"]
             
             # Catch when a tool starts running to send a UI status update
