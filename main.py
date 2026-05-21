@@ -14,7 +14,9 @@ from supabase_client import supabase_admin
 import shutil
 from ingestion import process_pdf_to_vectors
 from vision_agent import extract_invoice_data
+from routers.prediction import router as prediction_router
 import warnings
+from contextlib import asynccontextmanager
 
 warnings.filterwarnings("ignore")
 
@@ -26,13 +28,30 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+
 # ─────────────────────────────────────────────
-# 2. FastAPI App
+# 2. FastAPI App (with lifespan for clean boot)
 # ─────────────────────────────────────────────
-app = FastAPI(title="AutoTrade-Comply API")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Runs once on the worker process — prints boot messages a single time."""
+    print("🧠 Booting up RAG Agent (Unstructured Document Search)...")
+    print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
+    print("🕸️  Booting up LangGraph Orchestrator (Streaming Mode)...")
+    print("🔮 Booting up Prediction Agent (LangGraph State Machine)...")
+    print("✅ All agents online — server ready!")
+    yield
+
+app = FastAPI(title="AutoTrade-Comply API", lifespan=lifespan)
+app.include_router(prediction_router)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:4200"],
+    allow_origins=[
+        "http://localhost:4200",
+        "http://localhost:4201",
+        "http://localhost:4202",
+        "http://localhost:5173",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

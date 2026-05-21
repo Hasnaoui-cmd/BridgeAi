@@ -14,7 +14,7 @@ load_dotenv()
 READONLY_DATABASE_URL = os.getenv("READONLY_DATABASE_URL")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
-print("🧠 Booting up RAG Agent (Unstructured Document Search)...")
+
 
 # 2. Setup Vector Store
 embedding_model = HuggingFaceEmbeddings(model_name="BAAI/bge-m3")

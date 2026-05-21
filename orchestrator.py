@@ -20,7 +20,7 @@ from sql_agent import run_sql_agent
 # 1. Load Environment Variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-print("🕸️ Booting up LangGraph Orchestrator (Streaming Mode)...")
+
 
 # 2. Define the Graph State
 class GraphState(TypedDict):
