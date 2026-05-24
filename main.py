@@ -16,8 +16,9 @@ import re
 from ingestion import process_pdf_to_vectors
 from vision_agent import extract_data_from_file
 from routers.prediction import router as prediction_router
-from contextlib import asynccontextmanager
+from routers.routing import router as routing_router
 import warnings
+from contextlib import asynccontextmanager
 
 warnings.filterwarnings("ignore")
 
@@ -28,6 +29,7 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 DATABASE_URL = os.getenv("DATABASE_URL")
 groq_client = Groq(api_key=GROQ_API_KEY)
+
 
 # ─────────────────────────────────────────────
 # 2. FastAPI App (with lifespan for clean boot)
@@ -42,11 +44,9 @@ async def lifespan(app: FastAPI):
     print("✅ All agents online — server ready!")
     yield
 
-# ─────────────────────────────────────────────
-# 2. FastAPI App
-# ─────────────────────────────────────────────
 app = FastAPI(title="AutoTrade-Comply API", lifespan=lifespan)
 app.include_router(prediction_router)
+app.include_router(routing_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -396,9 +396,6 @@ async def get_user_sessions(user_id: str):
 # Initialize Supabase Admin Client (using Service Role Key to bypass RLS)
 #supabase_admin = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_SERVICE_ROLE_KEY"))
 
-
-
-# --- ENDPOINT: UPLOAD PDF ---
 @app.post("/admin/upload-pdf")
 async def admin_upload_pdf(
     file: UploadFile = File(...), 
@@ -481,6 +478,41 @@ async def admin_upload_pdf(
             os.remove(temp_path)
 
 
+@app.delete("/admin/users/{target_user_id}")
+async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is optional for safety
+    try:
+        print(f"📡 Request to delete user: {target_user_id} by admin: {admin_id}")
+
+        # 1. Security check (Only if admin_id is provided)
+        if admin_id:
+            role = get_user_role_from_id(admin_id)
+            if role != "admin":
+                return {"status": "error", "message": "Unauthorized: Admin access required."}
+
+        # 2. Delete from user_profiles table FIRST
+        # This clears your local data so the UI updates immediately
+        try:
+            supabase_admin.from_("user_profiles").delete().eq("id", target_user_id).execute()
+            print("✅ Removed from user_profiles table")
+        except Exception as e:
+            print(f"⚠️ Table delete warning: {e}")
+
+        # 3. Delete from Supabase Auth (The login account)
+        # We wrap this in another try/except so if the user is already gone from Auth,
+        # we still return "Success" to the frontend.
+        try:
+            supabase_admin.auth.admin.delete_user(target_user_id)
+            print("✅ Removed from Supabase Auth")
+        except Exception as auth_err:
+            # "User not found" usually happens here. We ignore it and stay successful.
+            print(f"ℹ️ Auth delete info (User might already be gone): {auth_err}")
+
+        return {"status": "success", "message": "User account and profile cleared."}
+
+    except Exception as e:
+        print(f"❌ Critical Delete Error: {e}")
+        return {"status": "error", "message": str(e)}
+
 # --- ENDPOINT: DELETE DOCUMENT ---
 @app.delete("/admin/delete-document/{doc_id}")
 async def delete_document(doc_id: str, filename: str):
@@ -522,7 +554,6 @@ async def delete_document(doc_id: str, filename: str):
 class UpdateRoleRequest(BaseModel):
     role: str
     admin_id: str
-
 @app.patch("/admin/users/{target_user_id}/role")
 async def update_user_role(target_user_id: str, request: UpdateRoleRequest):
     try:
@@ -570,9 +601,6 @@ async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is 
     except Exception as e:
         print(f"❌ Critical Delete Error: {e}")
         return {"status": "error", "message": str(e)}
-
-
-
 @app.post("/chat/documents")
 async def chat_with_multiple_documents(
     files: list[UploadFile] = File(...), 
@@ -699,3 +727,28 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
     except Exception as e:
         print(f"❌ Multi-Doc Endpoint Error: {e}")
         return {"error": str(e)}
+
+class CompanyCreate(BaseModel):
+    company_name: str
+    country: str
+
+@app.get("/api/companies")
+async def get_companies():
+    try:
+        response = supabase_admin.table("companies").select("id, company_name, country").execute()
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        print(f"❌ Error fetching companies: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/companies")
+async def create_company(company: CompanyCreate):
+    try:
+        response = supabase_admin.table("companies").insert({
+            "company_name": company.company_name,
+            "country": company.country
+        }).execute()
+        return {"status": "success", "data": response.data[0]}
+    except Exception as e:
+        print(f"❌ Error creating company: {e}")
+        return {"status": "error", "message": str(e)}

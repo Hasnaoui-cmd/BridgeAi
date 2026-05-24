@@ -4,10 +4,11 @@
  */
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import LandingPage from './pages/LandingPage';
 import Layout from './components/Layout';
 import Assistant from './components/Assistant';
 import Kanban from './components/Kanban';
-import RoutesPage from './components/Routes';
+import RouteOptimizer from './pages/RouteOptimizer';
 import Risk from './components/Risk';
 import Prediction from './components/Prediction';
 import Settings from './components/Settings';
@@ -35,20 +36,46 @@ function AdminRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+// Protected route wrapper — redirects to login if no user
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full text-stone-400">
+        Loading...
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Navigate to="/login" replace />;
+  }
+
+  return <>{children}</>;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/signup" element={<SignUp />} />
-        <Route path="/" element={<Layout />}>
-          <Route index element={<Navigate to="/assistant" replace />} />
+        <Route path="/" element={<LandingPage />} />
+        <Route element={<Layout />}>
           <Route path="assistant" element={<Assistant />} />
           <Route path="assistant/:sessionId" element={<Assistant />} />
           <Route path="documents" element={<Kanban />} />
-          <Route path="routes" element={<RoutesPage />} />
+          <Route path="routes" element={<RouteOptimizer />} />
           <Route path="risks" element={<Risk />} />
-          <Route path="prediction" element={<Prediction />} />
+          <Route 
+            path="prediction" 
+            element={
+              <ProtectedRoute>
+                <Prediction />
+              </ProtectedRoute>
+            } 
+          />
           <Route path="settings" element={<Settings />} />
           <Route
             path="admin"

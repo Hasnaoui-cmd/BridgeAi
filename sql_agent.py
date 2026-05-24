@@ -123,7 +123,7 @@ sql_agent = create_sql_agent(
     prefix=custom_prefix,
     max_iterations=5, # Stop it from looping too long
     handle_parsing_errors=True, # Crucial for Groq stability
-    top_k=10                      # Safety limit
+    top_k=10                   # Safety limit
 )
 
 def run_sql_agent(question: str):

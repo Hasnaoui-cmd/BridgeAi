@@ -181,8 +181,8 @@ export async function getHistory(sessionId: string) {
   return res.json();
 }
 
-export async function getPredictionHistory() {
-  const res = await fetch(`${API_URL}/api/predict/history`);
+export async function getPredictionHistory(userId: string) {
+  const res = await fetch(`${API_URL}/api/predict/history?user_id=${userId}`);
   if (!res.ok) throw new Error('Failed to load prediction history');
   return res.json();
 }
@@ -237,6 +237,7 @@ export interface PredictionResponse {
 export async function predictChat(
   conversationHistory: { role: string; content: string }[],
   message: string,
+  userId: string,
   currentPrediction?: PredictionData | null
 ): Promise<PredictionResponse> {
   const res = await fetch(`${API_URL}/api/predict/chat`, {
@@ -246,14 +247,34 @@ export async function predictChat(
       conversation_history: conversationHistory,
       message,
       current_prediction: currentPrediction || null,
+      user_id: userId,
     }),
   });
 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Server responded with ${res.status}: ${errText}`);
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error || 'Failed to get prediction');
   }
 
+  return res.json();
+}
+
+// ─────────────────────────────────────────────
+// 8. Companies — GET /api/companies, POST /api/companies
+// ─────────────────────────────────────────────
+export async function getCompanies() {
+  const res = await fetch(`${API_URL}/api/companies`);
+  if (!res.ok) throw new Error('Failed to fetch companies');
+  return res.json();
+}
+
+export async function createCompany(companyName: string, country: string) {
+  const res = await fetch(`${API_URL}/api/companies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ company_name: companyName, country }),
+  });
+  if (!res.ok) throw new Error('Failed to create company');
   return res.json();
 }
 
@@ -261,20 +282,20 @@ export async function predictChat(
 // 8. Vision Chat — POST /chat/vision (SSE stream, multipart/form-data)
 //    Expects: { file: File, question: string, session_id: string }
 // ─────────────────────────────────────────────
-export async function streamDocumentChat(
-  files: File[],
+export async function streamVisionChat(
+  file: File,
   question: string,
   sessionId: string,
   callbacks: StreamCallbacks
 ): Promise<void> {
   const formData = new FormData();
-  files.forEach(file => formData.append('files', file));
+  formData.append('file', file);
   formData.append('question', question);
   formData.append('session_id', sessionId);
 
   // NOTE: Do NOT set Content-Type header — the browser must set it automatically
   // so the multipart boundary is included correctly.
-  const res = await fetch(`${API_URL}/chat/documents`, {
+  const res = await fetch(`${API_URL}/chat/vision`, {
     method: 'POST',
     body: formData,
   });

@@ -1,19 +1,19 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Mic, ArrowUp, StopCircle, Lock, Paperclip, X, FileText } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import { getHistory, streamChat, streamAudioChat, streamDocumentChat, transcribeAudio } from '../lib/api';
+import { Mic, ArrowUp, StopCircle, Lock, Paperclip, X } from 'lucide-react';
+import { marked } from 'marked';
+import { getHistory, streamChat, streamAudioChat, streamVisionChat, transcribeAudio } from '../lib/api';
 import { useAuth } from '../lib/auth';
 
 
 interface Message {
   role: 'user' | 'ai' | 'admin';
   content: string;
+  htmlContent?: string;
   sources?: string[];
   isStreaming?: boolean;    // true while tokens are still arriving
   statusText?: string;     // e.g. "📊 Querying Enterprise Database..."
-  attachedFiles?: { name: string; type: string; url: string }[];
+  imageUrl?: string;       // data-URL of the uploaded invoice image (user messages only)
 }
 
 // ── Role badge helper ──────────────────────────────────────────────────────
@@ -57,15 +57,10 @@ export default function Assistant() {
   const [statusText, setStatusText] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
-  // ── Multi-document upload state ──
-  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
-  const [previewUrls, setPreviewUrls] = useState<string[]>([]);
+  // ── Image-upload state ──
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const previewUrlsRef = useRef<string[]>([]);
-
-  useEffect(() => {
-    previewUrlsRef.current = previewUrls;
-  }, [previewUrls]);
 
   const [isLoggedIn, setIsLoggedIn] = useState(false);
   const [userName, setUserName] = useState('');
@@ -138,9 +133,7 @@ export default function Assistant() {
   // Revoke object URL on unmount to prevent memory leaks
   useEffect(() => {
     return () => {
-      previewUrlsRef.current.forEach(url => {
-        if (url && url !== 'pdf') URL.revokeObjectURL(url);
-      });
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -155,6 +148,7 @@ export default function Assistant() {
           res.messages.map(async (msg: any) => ({
             role: msg.role,
             content: msg.content,
+            htmlContent: msg.role === 'ai' ? await marked.parse(msg.content) : undefined,
           }))
         );
         setMessages(parsedMsgs);
@@ -181,6 +175,7 @@ export default function Assistant() {
     setMessages(prev => [...prev, {
       role: 'ai',
       content: '',
+      htmlContent: '',
       isStreaming: true,
     }]);
 
@@ -195,6 +190,8 @@ export default function Assistant() {
             updated[updated.length - 1] = {
               ...last,
               content: current,
+              // We render raw text during streaming (fast) and parse markdown on done
+              htmlContent: undefined,
               statusText: undefined,
             };
           }
@@ -216,6 +213,7 @@ export default function Assistant() {
 
       onDone: async (sources: string[], _agents: string) => {
         const finalContent = streamAccRef.current;
+        const htmlContent = finalContent ? await marked.parse(finalContent) : '';
 
         setMessages(prev => {
           const updated = [...prev];
@@ -224,6 +222,7 @@ export default function Assistant() {
             updated[updated.length - 1] = {
               ...last,
               content: finalContent,
+              htmlContent,
               sources: sources.length > 0 ? sources : undefined,
               isStreaming: false,
               statusText: undefined,
@@ -248,6 +247,7 @@ export default function Assistant() {
             updated[updated.length - 1] = {
               ...last,
               content: `⚠️ ${error}`,
+              htmlContent: `<p>⚠️ ${error}</p>`,
               isStreaming: false,
               statusText: undefined,
             };
@@ -268,12 +268,12 @@ export default function Assistant() {
 
     const question = input;
     // Capture and clear vision state before any async work
-    const filesToSend = [...selectedFiles];
-    const capturedPreviews = [...previewUrls];
+    const fileToSend = selectedFile;
+    const capturedPreview = previewUrl;
 
     setInput('');
-    setSelectedFiles([]);
-    setPreviewUrls([]);
+    setSelectedFile(null);
+    setPreviewUrl(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
 
     const isFirstMessage = messages.length === 0;
@@ -282,18 +282,16 @@ export default function Assistant() {
     setMessages(prev => [...prev, {
       role: 'user',
       content: question,
-      ...(filesToSend.length > 0 ? {
-        attachedFiles: filesToSend.map((f, i) => ({ name: f.name, type: f.type, url: capturedPreviews[i] }))
-      } : {}),
+      ...(capturedPreview ? { imageUrl: capturedPreview } : {}),
     }]);
     setLoading(true);
 
     try {
       const callbacks = buildStreamCallbacks(isFirstMessage);
 
-      if (filesToSend.length > 0) {
+      if (fileToSend) {
         // ── Vision path: multipart/form-data with image ──
-        await streamDocumentChat(filesToSend, question, currentSessionId, callbacks);
+        await streamVisionChat(fileToSend, question, currentSessionId, callbacks);
       } else {
         // ── Standard text path ──
         await streamChat(question, currentSessionId, callbacks);
@@ -372,48 +370,20 @@ export default function Assistant() {
   //--------------------------------------------------- 
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = Array.from(e.target.files || []);
-    if (files.length === 0) return;
-
-    if (selectedFiles.length + files.length > 3) {
-      alert("You can only upload up to 3 files.");
-      return;
+    const file = e.target.files?.[0];
+    if (file && file.type.startsWith('image/')) {
+      setSelectedFile(file);
+      setPreviewUrl(URL.createObjectURL(file));
+    } else {
+      alert("Please select an image file (JPEG/PNG).");
     }
-
-    const newSelected = [...selectedFiles];
-    const newPreviews = [...previewUrls];
-
-    files.forEach(file => {
-      if (file.type.startsWith('image/')) {
-        newSelected.push(file);
-        newPreviews.push(URL.createObjectURL(file));
-      } else if (file.type === 'application/pdf') {
-        newSelected.push(file);
-        newPreviews.push('pdf');
-      } else {
-        alert(`File ${file.name} is not supported. Please select an image (JPEG/PNG) or a PDF.`);
-      }
-    });
-
-    setSelectedFiles(newSelected);
-    setPreviewUrls(newPreviews);
-    
-    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const removeFile = (index: number) => {
-    const newSelected = [...selectedFiles];
-    const newPreviews = [...previewUrls];
-    
-    if (newPreviews[index] !== 'pdf') {
-      URL.revokeObjectURL(newPreviews[index]);
-    }
-    
-    newSelected.splice(index, 1);
-    newPreviews.splice(index, 1);
-    
-    setSelectedFiles(newSelected);
-    setPreviewUrls(newPreviews);
+  const clearFile = () => {
+    setSelectedFile(null);
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    setPreviewUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   // ─────────────────────────────────────────────
@@ -463,39 +433,31 @@ export default function Assistant() {
                           <div className={`rounded-3xl px-8 py-5 text-stone-800 text-lg leading-[1.75] ${
                             role === 'admin' ? 'bg-amber-50 border border-amber-200' : 'bg-stone-100'
                           }`}>
-                            {/* Attached files */}
-                            {msg.attachedFiles && msg.attachedFiles.length > 0 && (
-                              <div className="mb-3 flex flex-wrap gap-3">
-                                {msg.attachedFiles.map((f, i) => (
-                                  f.type.startsWith('image/') ? (
-                                    <div key={i} className="flex flex-col">
-                                      <img
-                                        src={f.url}
-                                        alt={`Attached ${f.name}`}
-                                        className="h-24 w-auto rounded-xl object-cover shadow-md border border-stone-200 transition-all duration-300"
-                                      />
-                                    </div>
-                                  ) : (
-                                    <div key={i} className="inline-flex items-center gap-2 px-3 py-2 bg-white border border-stone-200 rounded-xl shadow-sm text-sm text-stone-600">
-                                      <FileText size={16} className="text-red-500" />
-                                      <span className="truncate max-w-[150px]" title={f.name}>{f.name}</span>
-                                    </div>
-                                  )
-                                ))}
+                            {/* Invoice image thumbnail */}
+                            {msg.imageUrl && (
+                              <div className="mb-3">
+                                <img
+                                  src={msg.imageUrl}
+                                  alt="Uploaded invoice"
+                                  className="max-h-48 w-auto rounded-2xl object-cover shadow-md border border-stone-200 transition-all duration-300"
+                                />
+                                <p className="text-xs text-stone-400 mt-1.5 flex items-center gap-1">
+                                  <Paperclip size={10} /> Invoice attached
+                                </p>
                               </div>
                             )}
                             {msg.content}
                           </div>
                         </div>
                       ) : (
-                        <div className="flex flex-col gap-1 w-full max-w-full">
+                        <div className="flex flex-col gap-1 max-w-[85%]">
                           {/* ── AI message header: BridgeAI + badge ── */}
                           <div className="flex items-center pl-1">
                             <span className="text-xs font-medium text-stone-500">BridgeAI</span>
                             {getRoleBadge('ai')}
                           </div>
 
-                          <div className="prose prose-lg prose-stone max-w-none text-stone-800 text-lg leading-[1.75] overflow-hidden">
+                          <div className="prose prose-lg prose-stone max-w-none text-stone-800 text-lg leading-[1.75]">
                             {/* Status badge — shown while agents are working */}
                             {msg.statusText && (
                               <div className="mb-3 inline-flex items-center gap-2 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-1.5 animate-pulse">
@@ -503,57 +465,15 @@ export default function Assistant() {
                               </div>
                             )}
 
-                            <ReactMarkdown
-                              remarkPlugins={[remarkGfm]}
-                              components={{
-                                table: ({ node, ...props }) => (
-                                  <div className="overflow-x-auto my-6 rounded-xl border border-stone-200 shadow-sm w-full">
-                                    <table className="w-full text-left border-collapse" {...props} />
-                                  </div>
-                                ),
-                                thead: ({ node, ...props }) => (
-                                  <thead className="bg-stone-100 text-stone-500 uppercase text-xs font-bold" {...props} />
-                                ),
-                                th: ({ node, ...props }) => (
-                                  <th className="px-4 py-3 border-b border-stone-200 whitespace-nowrap" {...props} />
-                                ),
-                                td: ({ node, children, ...props }) => {
-                                  // Helper to check for percentages/numbers
-                                  const checkPercentage = (child: any): boolean => {
-                                    if (typeof child === 'string') {
-                                      if (child.includes('%')) return true;
-                                      if (/^\d{1,3}\.\d+$/.test(child.trim())) return true; // matches e.g. 30.0
-                                    } else if (Array.isArray(child)) {
-                                      return child.some(checkPercentage);
-                                    } else if (child?.props?.children) {
-                                      return checkPercentage(child.props.children);
-                                    }
-                                    return false;
-                                  };
-                                  
-                                  const isPercentage = checkPercentage(children);
-                                  
-                                  return (
-                                    <td className={`px-4 py-3 text-sm ${isPercentage ? 'font-bold text-amber-700' : ''}`} {...props}>
-                                      {children}
-                                    </td>
-                                  );
-                                },
-                                tr: ({ node, ...props }) => (
-                                  <tr className="border-b border-stone-100 last:border-0 hover:bg-amber-50/30 even:bg-stone-50/50 transition-colors" {...props} />
-                                ),
-                                p: ({ node, children, ...props }) => {
-                                  // We can attach the blinking cursor to the last paragraph if streaming
-                                  return <p className="mb-4 last:mb-0" {...props}>{children}</p>;
-                                }
-                              }}
-                            >
-                              {msg.content}
-                            </ReactMarkdown>
-
-                            {/* Streaming Cursor placed directly after content */}
-                            {msg.isStreaming && (
-                              <span className="inline-block w-2.5 h-5 bg-stone-400 ml-1 translate-y-1 animate-pulse rounded-[1px]" />
+                            {/* Streaming: render raw text for speed */}
+                            {msg.isStreaming ? (
+                              <div className="whitespace-pre-wrap">
+                                {msg.content}
+                                <span className="inline-block w-2 h-5 bg-stone-400 ml-0.5 animate-pulse rounded-sm" />
+                              </div>
+                            ) : (
+                              /* Finished: render parsed markdown */
+                              <div dangerouslySetInnerHTML={{ __html: msg.htmlContent || msg.content }} />
                             )}
 
                             {msg.sources && msg.sources.length > 0 && (
@@ -603,35 +523,26 @@ export default function Assistant() {
       <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-[#Fdfdfc] via-[#Fdfdfc] to-transparent pt-10 pb-8 px-8">
         <div className="max-w-3xl mx-auto">
 
-          {/* ── Image preview strip — visible only when files are staged ── */}
-          {selectedFiles.length > 0 && (
-            <div className="mb-3 flex flex-wrap items-start gap-3">
-              {selectedFiles.map((file, i) => (
-                <div key={i} className="relative group/thumb inline-block">
-                  {file.type === 'application/pdf' ? (
-                    <div className="h-16 w-16 bg-white rounded-xl shadow-sm border border-amber-200 ring-1 ring-amber-100 flex flex-col items-center justify-center transition-all duration-300 relative">
-                      <FileText size={20} className="text-red-500 mb-1" />
-                      <span className="text-[9px] text-stone-500 truncate w-14 text-center px-1">{file.name}</span>
-                    </div>
-                  ) : (
-                    <img
-                      src={previewUrls[i]}
-                      alt="Preview"
-                      className="h-16 w-16 rounded-xl object-cover shadow-sm border border-amber-200 ring-1 ring-amber-100 transition-all duration-300"
-                    />
-                  )}
-                  {/* X remove button — appears on hover */}
-                  <button
-                    onClick={() => removeFile(i)}
-                    title="Remove file"
-                    className="absolute -top-2 -right-2 w-5 h-5 bg-stone-800 text-white rounded-full flex items-center justify-center shadow-md hover:bg-red-500 transition-colors duration-200 opacity-0 group-hover/thumb:opacity-100"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              ))}
-              <span className="mt-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 flex items-center gap-1 self-start">
-                <Paperclip size={10} /> {selectedFiles.length} Document{selectedFiles.length > 1 ? 's' : ''}
+          {/* ── Image preview strip — visible only when a file is staged ── */}
+          {previewUrl && (
+            <div className="mb-3 flex items-start gap-3">
+              <div className="relative group/thumb inline-block">
+                <img
+                  src={previewUrl}
+                  alt="Invoice preview"
+                  className="h-20 w-auto rounded-xl object-cover shadow-lg border border-amber-200 ring-2 ring-amber-100 transition-all duration-300"
+                />
+                {/* X remove button — appears on hover */}
+                <button
+                  onClick={clearFile}
+                  title="Remove image"
+                  className="absolute -top-2 -right-2 w-5 h-5 bg-stone-800 text-white rounded-full flex items-center justify-center shadow-md hover:bg-red-500 transition-colors duration-200 opacity-0 group-hover/thumb:opacity-100"
+                >
+                  <X size={11} />
+                </button>
+              </div>
+              <span className="mt-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 flex items-center gap-1 self-start">
+                <Paperclip size={10} /> Invoice ready
               </span>
             </div>
           )}
@@ -652,8 +563,7 @@ export default function Assistant() {
               ref={fileInputRef}
               id="vision-file-input"
               type="file"
-              multiple
-              accept="image/*,application/pdf"
+              accept="image/*"
               className="hidden"
               onChange={handleFileChange}
             />
@@ -670,10 +580,10 @@ export default function Assistant() {
             {/* Paperclip / attach button */}
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={!isLoggedIn || loading || isTranscribing || selectedFiles.length >= 3}
-              title="Attach documents"
+              disabled={!isLoggedIn || loading || isTranscribing}
+              title="Attach invoice image"
               className={`absolute left-14 w-8 h-8 flex items-center justify-center rounded-full transition-colors z-10 disabled:opacity-50
-                ${selectedFiles.length > 0
+                ${selectedFile
                   ? 'text-amber-600 bg-amber-50 hover:bg-amber-100'
                   : 'text-stone-400 hover:text-amber-600'
                 }`}
@@ -694,13 +604,9 @@ export default function Assistant() {
                   ? '✨ Transcribing...'
                   : isRecording
                     ? 'Recording audio...'
-                    : selectedFiles.length > 1
-                      ? 'Analyze these documents...'
-                      : selectedFiles.length === 1 && selectedFiles[0].type === 'application/pdf'
-                        ? 'Ask about this PDF document...'
-                        : selectedFiles.length === 1
-                          ? 'Ask about this invoice...'
-                          : 'Reply to BridgeAI...'
+                    : selectedFile
+                      ? 'Ask about this invoice...'
+                      : 'Reply to BridgeAI...'
               }
               className="w-full bg-white border border-stone-200 rounded-full py-4 pl-24 pr-14 shadow-sm focus:outline-none focus:ring-2 focus:ring-stone-200 focus:border-transparent transition-all placeholder:text-stone-400 text-stone-800 disabled:opacity-50"
             />
@@ -722,3 +628,4 @@ export default function Assistant() {
     </div>
   );
 }
+

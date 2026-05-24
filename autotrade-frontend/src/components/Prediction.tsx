@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import { predictChat, PredictionResponse, getPredictionHistory } from '../lib/api';
+import { useAuth } from '../lib/auth';
 
 // ─────────────────────────────────────────────
 // Types
@@ -161,6 +162,7 @@ function TimelineNode({ stage, days, active }: { stage: string; days: number; ac
 export default function Prediction() {
   const [searchParams, setSearchParams] = useSearchParams();
   const predictionId = searchParams.get('id');
+  const { user } = useAuth();
 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
@@ -532,9 +534,10 @@ export default function Prediction() {
   };
 
   const fetchHistoryList = async () => {
+    if (!user) return;
     setIsLoadingHistory(true);
     try {
-      const result = await getPredictionHistory();
+      const result = await getPredictionHistory(user.id);
       if (result.status === 'success' && result.data) {
         setHistory(result.data);
         window.dispatchEvent(new Event('predictionHistoryUpdated'));
@@ -551,11 +554,11 @@ export default function Prediction() {
   // Sync with ?id= URL param
   useEffect(() => {
     const loadById = async () => {
-      if (!predictionId) return;
+      if (!predictionId || !user) return;
       let pool = history;
       if (!pool.length) {
         try {
-          const res = await getPredictionHistory();
+          const res = await getPredictionHistory(user.id);
           if (res.status === 'success' && res.data) { setHistory(res.data); pool = res.data; }
         } catch { /* ignore */ }
       }
@@ -581,7 +584,7 @@ export default function Prediction() {
     setLoading(true);
     try {
       const historyPayload = messages.slice(1).map((m) => ({ role: m.role, content: m.content }));
-      const response: PredictionResponse = await predictChat(historyPayload, userMessage, prediction as any);
+      const response: PredictionResponse = await predictChat(historyPayload, userMessage, user?.id || '', prediction as any);
       setMessages((prev) => [...prev, { role: 'ai', content: response.message }]);
       if (response.status === 'success' && response.prediction_data) {
         setPrediction(response.prediction_data as any);
