@@ -98,6 +98,7 @@ class PredictionState(TypedDict):
     weight: Optional[float]             # Weight in kg
     origin: Optional[str]              # Origin country/port
     destination: Optional[str]         # Destination country/port
+    shipment_date: Optional[str]       # Date of shipment (YYYY-MM-DD)
     hs_code: Optional[str]             # HS code (optional, for doc lookup)
     missing_vars: list                  # List of still-missing variable names
 
@@ -123,29 +124,31 @@ EXTRACTION_SYSTEM_PROMPT = """You are a JSON extractor. Your ONLY job is to outp
 
 RULES (NEVER break these):
 - Output NOTHING except the JSON object — no explanation, no prose, no markdown, no code fences.
-- Scan the ENTIRE conversation (all messages, not just the last one) for these 6 fields:
+- Scan the ENTIRE conversation (all messages, not just the last one) for these 7 fields:
   1. direction   : "Import" or "Export"
   2. transport_mode : "Sea" or "Air"
   3. weight      : numeric kg value (extract number only)
   4. origin      : origin city / country / port
   5. destination : destination city / country / port
   6. hs_code     : 4-10 digit HS code if explicitly mentioned, else null
-- If a field was stated in any earlier message, include it. Do NOT lose previously given info.
+  7. shipment_date : Date of shipment in "YYYY-MM-DD" format if mentioned, else null
+- If a field was stated in any earlier message, include it. If the user updates or changes a field in the latest message, use the NEW value!
 - Use null for fields that were never mentioned anywhere in the conversation.
 - Do NOT infer or guess values that were not stated.
 
 EXACT output format (copy this structure):
-{"direction": "Import", "transport_mode": "Sea", "weight": 5000, "origin": "China", "destination": "Morocco", "hs_code": null}
+{"direction": "Import", "transport_mode": "Sea", "weight": 5000, "origin": "China", "destination": "Morocco", "hs_code": null, "shipment_date": "2026-06-01"}
 """
 
 MISSING_VARS_PROMPT = """You are the BridgeAI Delay Prediction Assistant. You help users predict customs clearance delays.
 
-You need these 5 variables to run a prediction:
+You need these 6 variables to run a prediction:
 1. Direction (Import or Export)
 2. Transport Mode (Sea or Air)
 3. Weight (in kg)
 4. Origin (country or port)
 5. Destination (country or port)
+6. Shipment Date (e.g. tomorrow, next week, or specific date)
 
 The user has provided: {provided}
 Still MISSING: {missing}
@@ -236,6 +239,7 @@ def extraction_node(state: PredictionState) -> dict:
     weight = variables.get("weight")
     origin = variables.get("origin")
     destination = variables.get("destination")
+    shipment_date = variables.get("shipment_date")
     hs_code = variables.get("hs_code")
 
     missing = []
@@ -249,6 +253,8 @@ def extraction_node(state: PredictionState) -> dict:
         missing.append("Origin (country/port)")
     if not destination:
         missing.append("Destination (country/port)")
+    if not shipment_date:
+        missing.append("Shipment Date")
 
     # If missing vars, generate a follow-up question
     if missing:
@@ -270,6 +276,7 @@ def extraction_node(state: PredictionState) -> dict:
             "weight": float(weight) if weight else None,
             "origin": origin,
             "destination": destination,
+            "shipment_date": shipment_date,
             "hs_code": hs_code,
             "missing_vars": missing,
             "response_message": follow_up,
@@ -283,6 +290,7 @@ def extraction_node(state: PredictionState) -> dict:
         "weight": float(weight),
         "origin": origin,
         "destination": destination,
+        "shipment_date": shipment_date,
         "hs_code": hs_code,
         "missing_vars": [],
         "status": "processing",
@@ -372,11 +380,10 @@ def rag_node(state: PredictionState) -> dict:
         # Build RULE 2 warning if documents are required
         document_warning = None
         if detected_docs:
-            doc_list = " and ".join(detected_docs)
+            doc_list = ", ".join(detected_docs)
             document_warning = (
-                f"This HS code requires an {doc_list} document. "
-                f"I am assuming your paperwork is perfectly compliant "
-                f"to calculate this physical delay."
+                f"Required documents for this product: {doc_list}. "
+                f"I am assuming you already have these documents to calculate the physical delay."
             )
 
         return {
@@ -400,16 +407,17 @@ def environment_node(state: PredictionState) -> dict:
     """
     origin = state.get("origin", "Unknown")
     destination = state.get("destination", "Unknown")
+    shipment_date = state.get("shipment_date")
 
-    print(f"🌍 [Environment Node] Fetching live data for: {origin} → {destination}")
+    print(f"🌍 [Environment Node] Fetching live data for: {origin} → {destination} on {shipment_date}")
 
     # get_live_weather now returns a full dict
-    origin_weather_data = get_live_weather(origin)
-    dest_weather_data = get_live_weather(destination)
+    origin_weather_data = get_live_weather(origin, shipment_date)
+    dest_weather_data = get_live_weather(destination, shipment_date)
 
     # Congestion remains an integer
-    origin_congestion = get_mock_port_congestion(f"Port of {origin}")
-    dest_congestion = get_mock_port_congestion(f"Port of {destination}")
+    origin_congestion = get_mock_port_congestion(f"Port of {origin}", shipment_date)
+    dest_congestion = get_mock_port_congestion(f"Port of {destination}", shipment_date)
 
     env_scores = {
         # Full weather dicts for the frontend
@@ -522,6 +530,8 @@ def ml_prediction_node(state: PredictionState) -> dict:
             f"The estimated total delay is **{delay_days} days**, primarily driven by **{main_factor_label}**. "
             f"Please refer to the dashboard on the right for the full timeline, weather impact, and root cause analysis."
         )
+        if document_warning:
+            response_message += f"\n\n**Note:** {document_warning}"
 
         # ── Build rich prediction payload ──
         prediction_data = {
@@ -536,6 +546,7 @@ def ml_prediction_node(state: PredictionState) -> dict:
                 "weight": weight,
                 "origin": origin,
                 "destination": destination,
+                "shipment_date": state.get("shipment_date"),
             }
         }
 
@@ -809,10 +820,23 @@ def route_after_extraction(state: PredictionState) -> str:
     """
     After extraction, decide whether to continue the pipeline or stop.
     If variables are missing → END (return follow-up question).
-    If all present → continue to sql_node.
+    If all present and we already have a prediction -> check if anything changed.
     """
     if state.get("missing_vars"):
         return END
+
+    if state.get("final_prediction"):
+        old_vars = state["final_prediction"].get("variables", {})
+        # If none of the variables have changed, it's a follow-up question!
+        if (state.get("direction") == old_vars.get("direction") and
+            state.get("transport_mode") == old_vars.get("transport_mode") and
+            state.get("weight") == old_vars.get("weight") and
+            state.get("origin") == old_vars.get("origin") and
+            state.get("destination") == old_vars.get("destination") and
+            state.get("shipment_date") == old_vars.get("shipment_date")):
+            return "follow_up_node"
+
+    # New or updated shipment details, continue to SQL node
     return "sql_node"
 
 def follow_up_node(state: PredictionState) -> dict:
@@ -837,8 +861,9 @@ def route_start(state: PredictionState) -> str:
     """
     Decide whether to start a new extraction or answer a follow-up question.
     """
-    if state.get("final_prediction"):
-        return "follow_up_node"
+    # Always route to extraction_node first so we can detect modifications.
+    # extraction_node will see the full history, extract variables, and
+    # route_after_extraction will compare them to state["final_prediction"].
     return "extraction_node"
 
 
@@ -867,7 +892,7 @@ def build_prediction_graph():
     workflow.add_conditional_edges(
         "extraction_node",
         route_after_extraction,
-        {"sql_node": "sql_node", END: END}
+        {"sql_node": "sql_node", "follow_up_node": "follow_up_node", END: END}
     )
 
     # Sequential edges for the full pipeline
@@ -916,6 +941,7 @@ async def run_prediction_agent(conversation_history: list, user_message: str, cu
         "weight": None,
         "origin": None,
         "destination": None,
+        "shipment_date": None,
         "hs_code": None,
         "missing_vars": [],
         "sql_hs_info": None,

@@ -48,6 +48,7 @@ class PredictionRequest(BaseModel):
     conversation_history: list[ChatMessage] = []
     message: str  # The latest user message
     current_prediction: Optional[PredictionData] = None
+    user_id: str
 
 
 class PredictionResponse(BaseModel):
@@ -97,7 +98,11 @@ async def predict_chat(request: PredictionRequest):
         
         # Log to Supabase prediction_history table
         try:
+            # Handle empty user_id string to prevent UUID parsing errors
+            valid_user_id = request.user_id if request.user_id and request.user_id.strip() != "" else None
+            
             supabase_admin.table("prediction_history").insert({
+                "user_id": valid_user_id,
                 "user_message": request.message,
                 "agent_response": result["message"],
                 "prediction_data": prediction_data_to_save
@@ -120,20 +125,21 @@ async def predict_chat(request: PredictionRequest):
 # GET /api/predict/history
 # ─────────────────────────────────────────────
 @router.get("/history")
-async def get_prediction_history_route():
+async def get_prediction_history_route(user_id: str):
     """
     Fetches the recent prediction history.
     Queries prediction_history table, selects id, created_at, user_message, agent_response, prediction_data.
-    Orders by created_at descending, limits to 20, and returns the data.
+    Orders by created_at descending, limits to 20, and returns the data for the specific user.
     """
     try:
-        response = (
-            supabase_admin.table("prediction_history")
-            .select("id, created_at, user_message, agent_response, prediction_data")
-            .order("created_at", desc=True)
-            .limit(20)
-            .execute()
-        )
+        query = supabase_admin.table("prediction_history").select("id, created_at, user_message, agent_response, prediction_data")
+        
+        if user_id and user_id.strip() != "":
+            query = query.eq("user_id", user_id)
+        else:
+            query = query.is_("user_id", "null")
+            
+        response = query.order("created_at", desc=True).limit(20).execute()
         return {"status": "success", "data": response.data}
     except Exception as e:
         print(f"❌ History fetch error: {e}")

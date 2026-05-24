@@ -181,8 +181,8 @@ export async function getHistory(sessionId: string) {
   return res.json();
 }
 
-export async function getPredictionHistory() {
-  const res = await fetch(`${API_URL}/api/predict/history`);
+export async function getPredictionHistory(userId: string) {
+  const res = await fetch(`${API_URL}/api/predict/history?user_id=${userId}`);
   if (!res.ok) throw new Error('Failed to load prediction history');
   return res.json();
 }
@@ -237,6 +237,7 @@ export interface PredictionResponse {
 export async function predictChat(
   conversationHistory: { role: string; content: string }[],
   message: string,
+  userId: string,
   currentPrediction?: PredictionData | null
 ): Promise<PredictionResponse> {
   const res = await fetch(`${API_URL}/api/predict/chat`, {
@@ -246,14 +247,34 @@ export async function predictChat(
       conversation_history: conversationHistory,
       message,
       current_prediction: currentPrediction || null,
+      user_id: userId,
     }),
   });
 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Server responded with ${res.status}: ${errText}`);
+    const errorData = await res.json().catch(() => null);
+    throw new Error(errorData?.error || 'Failed to get prediction');
   }
 
+  return res.json();
+}
+
+// ─────────────────────────────────────────────
+// 8. Companies — GET /api/companies, POST /api/companies
+// ─────────────────────────────────────────────
+export async function getCompanies() {
+  const res = await fetch(`${API_URL}/api/companies`);
+  if (!res.ok) throw new Error('Failed to fetch companies');
+  return res.json();
+}
+
+export async function createCompany(companyName: string, country: string) {
+  const res = await fetch(`${API_URL}/api/companies`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ company_name: companyName, country }),
+  });
+  if (!res.ok) throw new Error('Failed to create company');
   return res.json();
 }
 

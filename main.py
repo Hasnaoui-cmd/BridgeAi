@@ -16,6 +16,7 @@ import re
 from ingestion import process_pdf_to_vectors
 from vision_agent import extract_data_from_file
 from routers.prediction import router as prediction_router
+from routers.routing import router as routing_router
 import warnings
 from contextlib import asynccontextmanager
 
@@ -45,6 +46,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AutoTrade-Comply API", lifespan=lifespan)
 app.include_router(prediction_router)
+app.include_router(routing_router)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -726,3 +728,27 @@ If the user asks to 'find risks' or 'check consistency', compare the data points
         print(f"❌ Multi-Doc Endpoint Error: {e}")
         return {"error": str(e)}
 
+class CompanyCreate(BaseModel):
+    company_name: str
+    country: str
+
+@app.get("/api/companies")
+async def get_companies():
+    try:
+        response = supabase_admin.table("companies").select("id, company_name, country").execute()
+        return {"status": "success", "data": response.data}
+    except Exception as e:
+        print(f"❌ Error fetching companies: {e}")
+        return {"status": "error", "message": str(e)}
+
+@app.post("/api/companies")
+async def create_company(company: CompanyCreate):
+    try:
+        response = supabase_admin.table("companies").insert({
+            "company_name": company.company_name,
+            "country": company.country
+        }).execute()
+        return {"status": "success", "data": response.data[0]}
+    except Exception as e:
+        print(f"❌ Error creating company: {e}")
+        return {"status": "error", "message": str(e)}

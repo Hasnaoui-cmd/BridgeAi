@@ -1,0 +1,87 @@
+origin_node,dest_node,transport_mode,carrier_name,distance_km,base_time_hours,base_cost_usd,co2_emissions_kg,carrier_reliability_score,risk_factor
+Tangier MED,Algeciras,Sea,CMA CGM,40,1.5,450.00,6.00,0.94,0.01
+Tangier MED,Algeciras,Sea,Maersk,40,1.5,460.00,6.00,0.93,0.01
+Tangier MED,Barcelona,Sea,MSC,1100,32.0,1200.00,165.00,0.91,0.02
+Tangier MED,Valencia,Sea,Hapag-Lloyd,980,28.0,1100.00,147.00,0.92,0.02
+Casablanca,Rotterdam,Sea,Maersk,2600,75.0,2400.00,390.00,0.89,0.03
+Casablanca,Antwerp,Sea,MSC,2550,74.0,2350.00,382.50,0.90,0.03
+Casablanca,Hamburg,Sea,CMA CGM,2900,84.0,2700.00,435.00,0.88,0.04
+Jorf Lasfar,Rotterdam,Sea,Pan Ocean,2650,76.0,2500.00,397.50,0.86,0.04
+Jorf Lasfar,Antwerp,Sea,Frontline,2600,75.0,2450.00,390.00,0.87,0.04
+Nador,Algeciras,Sea,Evergreen Marine,320,10.0,650.00,48.00,0.91,0.02
+Nador,Barcelona,Sea,MSC,950,27.0,1150.00,142.50,0.92,0.02
+Nador,Marseille,Sea,CMA CGM,1100,32.0,1300.00,165.00,0.89,0.03
+Agadir,Rotterdam,Sea,Maersk,3100,90.0,2900.00,465.00,0.90,0.04
+Agadir,Le Havre,Sea,Hapag-Lloyd,2800,81.0,2600.00,420.00,0.92,0.03
+Safi,Rotterdam,Sea,COSCO Shipping,2800,81.0,2650.00,420.00,0.87,0.04
+Tangier MED,Genova,Sea,MSC,1400,40.0,1450.00,210.00,0.93,0.02
+Tangier MED,Marseille,Sea,CMA CGM,1350,39.0,1400.00,202.50,0.91,0.02
+Casablanca,Valencia,Sea,Hapag-Lloyd,1150,33.0,1350.00,172.50,0.93,0.02
+Casablanca,Barcelona,Sea,Evergreen Marine,1250,36.0,1450.00,187.50,0.89,0.03
+Dakhla,Algeciras,Sea,Maersk,1500,44.0,1600.00,225.00,0.88,0.04
+Dakhla,Rotterdam,Sea,MSC,3300,96.0,3100.00,495.00,0.89,0.04
+Laayoune,Algeciras,Sea,CMA CGM,1100,32.0,1350.00,165.00,0.90,0.03
+Tangier MED,Bremerhaven,Sea,HMM,2750,79.0,2550.00,412.50,0.94,0.03
+Tangier MED,Southampton,Sea,Maersk,2200,63.0,2100.00,330.00,0.92,0.02
+Casablanca,Piraeus,Sea,COSCO Shipping,2950,85.0,2800.00,442.50,0.89,0.03
+Nador,Valencia,Sea,Evergreen Marine,450,13.0,750.00,67.50,0.90,0.02
+Agadir,Marseille,Sea,CMA CGM,2150,62.0,2150.00,322.50,0.91,0.03
+Tangier MED,Sines,Sea,MSC,480,14.0,850.00,72.00,0.93,0.02
+Casablanca,Sines,Sea,Maersk,550,16.0,900.00,82.50,0.92,0.02
+Jorf Lasfar,Hamburg,Sea,Pan Ocean,3050,88.0,2850.00,457.50,0.85,0.04
+Tangier MED,Gioia Tauro,Sea,MSC,1850,53.0,1800.00,277.50,0.91,0.02
+Casablanca,Trieste,Sea,CMA CGM,3200,92.0,2950.00,480.00,0.89,0.03
+Tangier MED,Felixstowe,Sea,Hapag-Lloyd,2300,66.0,2200.00,345.00,0.92,0.03
+Casablanca,London,Sea,Maersk,2400,69.0,2300.00,360.00,0.91,0.03
+Tangier MED,Gdansk,Sea,MSC,3800,109.0,3400.00,570.00,0.90,0.04
+Casablanca CMN,Paris CDG,Air,Royal Air Maroc Cargo,1900,3.5,6500.00,2280.00,0.96,0.01
+Casablanca CMN,Paris CDG,Air,Air France Cargo,1900,3.5,6800.00,2280.00,0.95,0.01
+Casablanca CMN,Frankfurt FRA,Air,Lufthansa Cargo,2300,4.0,7900.00,2760.00,0.97,0.01
+Casablanca CMN,Amsterdam AMS,Air,DHL Aviation,2200,3.9,7600.00,2640.00,0.96,0.01
+Tangier TNG,Madrid MAD,Air,Royal Air Maroc Cargo,1050,2.5,3800.00,1260.00,0.95,0.01
+Tangier TNG,Paris CDG,Air,Air France Cargo,1600,3.1,5600.00,1920.00,0.94,0.01
+Marrakesh RAK,London LHR,Air,Royal Air Maroc Cargo,2350,4.1,8100.00,2820.00,0.94,0.01
+Casablanca CMN,London LHR,Air,UPS Airlines,2100,3.8,7350.00,2520.00,0.95,0.01
+Agadir AGA,Paris CDG,Air,Royal Air Maroc Cargo,2300,4.0,8050.00,2760.00,0.93,0.02
+Nador NDR,Brussels BRU,Air,DHL Aviation,1850,3.4,6500.00,2220.00,0.94,0.01
+Casablanca CMN,Luxembourg LUX,Air,CargoLux,2150,3.8,7500.00,2580.00,0.97,0.01
+Tangier TNG,Frankfurt FRA,Air,Lufthansa Cargo,2000,3.6,7000.00,2400.00,0.96,0.01
+Casablanca CMN,Milan MXP,Air,Emirates SkyCargo,1950,3.6,6900.00,2340.00,0.95,0.01
+Casablanca CMN,Leipzig LEJ,Air,DHL Aviation,2500,4.3,8600.00,3000.00,0.96,0.01
+Tangier TNG,Barcelona BCN,Air,FedEx Express,1100,2.6,4100.00,1320.00,0.95,0.01
+Casablanca CMN,Madrid MAD,Air,Air France Cargo,1050,2.5,3900.00,1260.00,0.94,0.01
+Marrakesh RAK,Frankfurt FRA,Air,Lufthansa Cargo,2600,4.4,8900.00,3120.00,0.96,0.01
+Agadir AGA,Amsterdam AMS,Air,DHL Aviation,2700,4.5,9300.00,3240.00,0.94,0.02
+Casablanca CMN,Brussels BRU,Air,Royal Air Maroc Cargo,2150,3.8,7400.00,2580.00,0.95,0.01
+Tangier TNG,London LHR,Air,FedEx Express,1800,3.3,6300.00,2160.00,0.96,0.01
+Casablanca CMN,Barcelona BCN,Air,Qatar Airways Cargo,1220,2.7,4500.00,1464.00,0.95,0.01
+Nador NDR,Frankfurt FRA,Air,Lufthansa Cargo,1950,3.5,6900.00,2340.00,0.96,0.01
+Casablanca CMN,Zurich ZRH,Air,Turkish Cargo,2100,3.8,7300.00,2520.00,0.94,0.01
+Marrakesh RAK,Paris CDG,Air,Air France Cargo,2100,3.8,7350.00,2520.00,0.95,0.01
+Tangier TNG,Brussels BRU,Air,DHL Aviation,1800,3.3,6400.00,2160.00,0.95,0.01
+Casablanca Voyageurs,Tangier Ville,Rail,ONCF,340,3.5,850.00,102.00,0.94,0.02
+Marrakesh Railway Station,Casablanca Voyageurs,Rail,ONCF,250,3.0,650.00,75.00,0.93,0.02
+Fez Station,Casablanca Voyageurs,Rail,ONCF,300,3.2,750.00,90.00,0.92,0.02
+Madrid Atocha,Paris Gare de Lyon,Rail,Renfe Mercancias,1250,15.0,2800.00,375.00,0.91,0.03
+Barcelona Can Tunis,Lyon Scapa,Rail,Fret SNCF,650,8.5,1600.00,195.00,0.90,0.02
+Paris Gare de Lyon,Frankfurt Main,Rail,DB Cargo,620,8.0,1550.00,186.00,0.93,0.02
+Madrid Atocha,Zaragoza Plaza,Rail,Renfe Mercancias,320,4.5,800.00,96.00,0.94,0.02
+Zaragoza Plaza,Bettembourg,Rail,Captrain,1150,14.5,2600.00,345.00,0.89,0.03
+Antwerp North,Rotterdam Elst,Rail,Lineas,110,2.0,400.00,33.00,0.92,0.01
+Frankfurt Main,Rotterdam Elst,Rail,DB Cargo,450,6.0,1200.00,135.00,0.94,0.02
+Milan Smistamento,Frankfurt Main,Rail,Mercitalia Rail,680,9.0,1700.00,204.00,0.91,0.03
+Paris Gare de Lyon,Antwerp North,Rail,Fret SNCF,360,5.0,950.00,108.00,0.89,0.02
+Tangier Ville,Nador Ville,Rail,ONCF,420,5.5,1050.00,126.00,0.91,0.03
+Bettembourg,Rotterdam Elst,Rail,Crossrail,380,5.2,1000.00,114.00,0.90,0.02
+Zaragoza Plaza,Barcelona Can Tunis,Rail,Renfe Mercancias,300,4.0,750.00,90.00,0.93,0.02
+Tangier MED,Tangier Ville,Transfer,ONCF,50,1.5,300.00,50.00,0.97,0.01
+Casablanca,Casablanca Voyageurs,Transfer,ONCF,12,0.8,200.00,12.00,0.98,0.01
+Casablanca CMN,Casablanca,Transfer,ONCF,32,1.2,250.00,32.00,0.96,0.01
+Nador,Nador Ville,Transfer,ONCF,15,0.7,180.00,15.00,0.97,0.01
+Algeciras,Madrid Atocha,Transfer,Renfe Mercancias,650,8.0,1400.00,195.00,0.92,0.03
+Barcelona,Barcelona Can Tunis,Transfer,Renfe Mercancias,8,0.5,150.00,8.00,0.98,0.01
+Rotterdam,Rotterdam Elst,Transfer,DB Cargo,25,1.0,220.00,25.00,0.96,0.01
+Antwerp,Antwerp North,Transfer,Lineas,18,0.9,200.00,18.00,0.95,0.01
+Marseille,Lyon Scapa,Transfer,Fret SNCF,310,4.0,850.00,93.00,0.91,0.02
+Paris CDG,Paris Gare de Lyon,Transfer,Fret SNCF,28,1.1,240.00,28.00,0.94,0.01
+Frankfurt FRA,Frankfurt Main,Transfer,DB Cargo,14,0.6,180.00,14.00,0.97,0.01

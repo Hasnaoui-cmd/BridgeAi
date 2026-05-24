@@ -172,6 +172,9 @@ cd autotrade-frontend
 npm install
 ```
 
+> [!NOTE]
+> We recently integrated a premium landing page containing several Shadcn UI components and Framer Motion animations. Running `npm install` is required to fetch these new packages (`@radix-ui/react-*`, `framer-motion`, etc.).
+
 ### Step 2 — Start the React dev server
 
 ```powershell
