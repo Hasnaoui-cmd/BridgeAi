@@ -90,9 +90,10 @@ export default function Layout() {
   };
 
   const loadPredictionHistory = async () => {
+    if (!user) return;
     setIsLoadingPredictionHistory(true);
     try {
-      const res = await getPredictionHistory();
+      const res = await getPredictionHistory(user.id);
       if (res?.status === 'success' && res?.data) {
         setPredictionHistory(res.data);
       }
@@ -113,7 +114,7 @@ export default function Layout() {
     loadPredictionHistory();
     window.addEventListener('predictionHistoryUpdated', loadPredictionHistory);
     return () => window.removeEventListener('predictionHistoryUpdated', loadPredictionHistory);
-  }, []);
+  }, [user]);
 
   // Auto-expand the assistant accordion when on an assistant route
   useEffect(() => {
@@ -435,7 +436,7 @@ export default function Layout() {
       )}
 
       {/* ── Main Area ── */}
-      <main className="flex-1 overflow-hidden relative">
+      <main className="flex-1 overflow-y-auto relative">
         <Outlet />
       </main>
     </div>

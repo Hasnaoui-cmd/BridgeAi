@@ -14,37 +14,41 @@ load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 READONLY_DATABASE_URL = os.getenv("READONLY_DATABASE_URL")
 
-db_url = READONLY_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
+_sql_agent = None
 
-# 2. CREATE A ROBUST ENGINE (The "Heartbeat" Fix)
-# pool_pre_ping=True ensures we reconnect if the server closed the idle connection
-engine = create_engine(
-    db_url,
-    pool_pre_ping=True,
-    pool_recycle=300, # Refresh connection every 5 mins
-    connect_args={"connect_timeout": 10}
-)
-
-print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
-
-# 2. Connect to the Database
-# We explicitly hide the "documents" and vector tables from the SQL agent!
-# When connecting to the DB, add 'sample_rows_in_table_info' and 'max_string_length'
-db = SQLDatabase(
-    engine=engine,
-    ignore_tables=["documents", "langchain_pg_collection", "langchain_pg_embedding"],
-    sample_rows_in_table_info=2, # Keeps schema small
-    max_string_length=4000      # <--- INCREASE THIS (Default is 1000)
-)
-
-# 3. Initialize the LLM
-llm = ChatGroq(temperature=0, model_name="meta-llama/llama-4-scout-17b-16e-instruct", api_key=GROQ_API_KEY)
-
-# 4. Create the SQL Toolkit
-toolkit = SQLDatabaseToolkit(db=db, llm=llm)
-
-# 5. Define the Agent's Persona and Rules
-custom_prefix = """### ROLE ###
+def _init_sql():
+    global _sql_agent
+    if _sql_agent is not None:
+        return
+        
+    print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
+    
+    db_url = READONLY_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://")
+    
+    # 2. CREATE A ROBUST ENGINE (The "Heartbeat" Fix)
+    engine = create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_recycle=300, # Refresh connection every 5 mins
+        connect_args={"connect_timeout": 10}
+    )
+    
+    # 2. Connect to the Database
+    db = SQLDatabase(
+        engine=engine,
+        ignore_tables=["documents", "langchain_pg_collection", "langchain_pg_embedding"],
+        sample_rows_in_table_info=2, # Keeps schema small
+        max_string_length=4000      # <--- INCREASE THIS (Default is 1000)
+    )
+    
+    # 3. Initialize the LLM
+    llm = ChatGroq(temperature=0, model_name="meta-llama/llama-4-scout-17b-16e-instruct", api_key=GROQ_API_KEY)
+    
+    # 4. Create the SQL Toolkit
+    toolkit = SQLDatabaseToolkit(db=db, llm=llm)
+    
+    # 5. Define the Agent's Persona and Rules
+    custom_prefix = """### ROLE ###
 You are a precision-focused SQL Executor for BridgeAI. Your expertise is in converting natural language into 100% accurate SQL queries for Moroccan and International Trade Databases, and Multilingual Trade Mapping. Your primary goal is to find the exact data the user is asking for without any assumptions or hallucinations. You will follow a strict Re-Act flow to discover schemas, write SQL, and interpret results.
 ### ZERO TOLERANCE FOR HALLUCINATION ###
 1. If the 'Observation' tool returns an empty result or is cut off, you MUST say: "I ran the query but the database returned no matching data."
@@ -113,27 +117,28 @@ You are a precision-focused SQL Executor for BridgeAI. Your expertise is in conv
 4. NO CHATTER: Do not provide signatures, 'Best Regards', or long introductions. 
 5. if the user ask a general question about what a tariff is or how customs works, respond with: "I am sorry, but I do not have information regarding that in my structured trade database. Please consult the legal documents for more conceptual information."
 """
-
-# 6. Create the Execution Agent
-sql_agent = create_sql_agent(
-    llm=llm,
-    toolkit=toolkit,
-    verbose=True, # Set to True so you can watch it "think" and write SQL in your terminal!
-    agent_type="zero-shot-react-description",
-    prefix=custom_prefix,
-    max_iterations=5, # Stop it from looping too long
-    handle_parsing_errors=True, # Crucial for Groq stability
-    top_k=10                   # Safety limit
-)
+    
+    # 6. Create the Execution Agent
+    _sql_agent = create_sql_agent(
+        llm=llm,
+        toolkit=toolkit,
+        verbose=True, 
+        agent_type="zero-shot-react-description",
+        prefix=custom_prefix,
+        max_iterations=5, 
+        handle_parsing_errors=True, 
+        top_k=10                   
+    )
 
 def run_sql_agent(question: str):
     """Takes a natural language question, writes SQL, runs it, and returns the answer."""
+    _init_sql()
     try:
         time.sleep(0.5) # Small delay to ensure the agent is ready
         # Force the agent to specifically look for descriptions
         query = f"Provide the official 'description_fr' and 'import_duty_rate' for: {question}"
 
-        response = sql_agent.invoke({"input": query}, config={"run_name": "SQL_Trade_Expert"})
+        response = _sql_agent.invoke({"input": query}, config={"run_name": "SQL_Trade_Expert"})
         return response["output"]
     except Exception as e:
         return f"Error executing SQL search: {str(e)}"
