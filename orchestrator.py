@@ -20,7 +20,7 @@ from sql_agent import run_sql_agent
 # 1. Load Environment Variables
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
-
+print("🕸️ Booting up LangGraph Orchestrator (Streaming Mode)...")
 
 # 2. Define the Graph State
 class GraphState(TypedDict):
@@ -104,7 +104,6 @@ async def stream_orchestrator(question: str, past_messages: list):
         Use this when the query is conceptual, process-oriented, or asks about how
         something works. This tool searches legal PDFs and regulatory documents.
         """
-        # Placeholder implementation - replace with actual RAG agent logic
         return run_rag_agent(search_query, history_str)
 
     tools = [search_structured_database, search_legal_documents]
@@ -242,7 +241,7 @@ async def stream_orchestrator(question: str, past_messages: list):
     # --- E. EXECUTE AS A REAL-TIME STREAM ---
     try:
         # astream_events lets us watch the AI as it works, step by step!
-        async for event in app.astream_events(initial_state, version="v2",config={"run_name": "Master_orchestrator"}):
+        async for event in app.astream_events(initial_state, version="v2", config={"run_name": "Master_Orchestrator"}):
             kind = event["event"]
             
             # Catch when a tool starts running to send a UI status update
