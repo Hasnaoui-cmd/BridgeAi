@@ -1,11 +1,11 @@
 # ──────────────────────────────────────────────
 # BridgeAI — Python Dependencies
+# Install: pip install -r requirements.txt
 # ──────────────────────────────────────────────
 
 # Web Framework
-fastapi==0.136.1
-uvicorn==0.47.0
-python-multipart==0.0.28
+fastapi
+uvicorn[standard]
 
 # Database
 psycopg[binary]
@@ -13,8 +13,36 @@ supabase
 sqlalchemy
 
 # Environment
-python-dotenv==1.2.2
+python-dotenv
+
+# LLM Provider
+groq
+langchain
+langchain-groq
+langchain-community
+langchain-huggingface
+langchain-postgres
+
+# LangGraph (State Machine Orchestration)
+langgraph
+
+# Embeddings
+sentence-transformers
+
+# ML / Data Science
+pandas
+numpy
+scikit-learn
+shap
+xgboost
+
+# PDF Ingestion
+llama-parse
+
+# HTTP Client (Environment APIs)
+requests
 
 # File Handling
 python-multipart
-pydanticnetworkx
+pydantic
+networkx

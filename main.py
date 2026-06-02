@@ -37,10 +37,18 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Runs once on the worker process — prints boot messages a single time."""
-    print("🧠 Booting up RAG Agent (Unstructured Document Search)...")
-    print("📊 Booting up SQL Agent (Structured Data Cruncher)...")
     print("🕸️  Booting up LangGraph Orchestrator (Streaming Mode)...")
     print("🔮 Booting up Prediction Agent (LangGraph State Machine)...")
+    
+    # Pre-load heavy ML models and DB engines in the worker ONLY
+    from rag_agent import _init_rag
+    from sql_agent import _init_sql
+    from services.routing_engine import _initialize_graph
+    
+    _init_rag()
+    _init_sql()
+    _initialize_graph()
+    
     print("✅ All agents online — server ready!")
     yield
 

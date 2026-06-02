@@ -22,11 +22,15 @@ BridgeAI/
 ├── agents/
 │   └── prediction_agent.py        # LangGraph Prediction State Machine (5 nodes)
 │
+├── services/
+│   └── routing_engine.py          # Multimodal Route Optimizer Graph Engine
+│
 ├── utils/
 │   └── environment_api.py         # Live weather & port congestion APIs
 │
 ├── routers/
 │   ├── prediction.py              # POST /api/predict/chat endpoint
+│   ├── routing.py                 # POST /api/route/optimize endpoint
 │   └── auth.py                    # Authentication stub
 │
 ├── ml_models/
@@ -220,11 +224,13 @@ Open **http://localhost:4200** in your browser. ✅
 | `POST` | `/chat`                        | SSE streaming chat (Orchestrator → SQL/RAG)       |
 | `GET`  | `/history/{session_id}`        | Retrieve chat history for a session               |
 
-### Prediction Agent
+### Prediction & Routing
 
 | Method | Endpoint                       | Description                                       |
 |--------|--------------------------------|---------------------------------------------------|
 | `POST` | `/api/predict/chat`            | Conversational delay prediction (LangGraph)       |
+| `GET`  | `/api/route/nodes`             | Fetch unique supply chain nodes                   |
+| `POST` | `/api/route/optimize`          | Calculate shortest multimodal path via NetworkX   |
 
 ### Audio & Vision
 
@@ -325,6 +331,7 @@ The project uses **Supabase** (hosted PostgreSQL + pgvector) — no local databa
 | `documents`                | RAG Agent          | pgvector embeddings (legal PDFs)       |
 | `document_p`               | RAG Agent          | Additional pgvector collection         |
 | `hs_nomenclature`          | SQL Agent          | HS code classifications & descriptions |
+| `optimisation_data`        | Routing Engine     | Multimodal routes & transport costs    |
 | `langchain_pg_collection`  | RAG Agent          | LangChain vector metadata              |
 | `langchain_pg_embedding`   | RAG Agent          | LangChain vector storage               |
 | `user_profiles`            | `main.py`          | User roles & authentication            |
