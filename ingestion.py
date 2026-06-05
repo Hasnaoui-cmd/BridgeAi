@@ -3,7 +3,7 @@ import uuid
 from dotenv import load_dotenv
 from llama_parse import LlamaParse
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from rag_agent import get_db
+from rag_agent import get_write_db
 
 load_dotenv()
 
@@ -55,7 +55,7 @@ def process_pdf_to_vectors(file_path: str, filename: str):
             })
 
         print(f"💾 Saving {len(chunks)} chunks to Supabase...")
-        get_db().add_texts(texts=chunks, metadatas=metadatas)
+        get_write_db().add_texts(texts=chunks, metadatas=metadatas)
         
         print(f"✅ Successfully ingested {filename}.")
         return len(chunks)

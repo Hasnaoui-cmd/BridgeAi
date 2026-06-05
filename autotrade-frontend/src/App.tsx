@@ -7,7 +7,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import LandingPage from './pages/LandingPage';
 import Layout from './components/Layout';
 import Assistant from './components/Assistant';
-import Kanban from './components/Kanban';
+// Documents page removed from sidebar
 import RouteOptimizer from './pages/RouteOptimizer';
 import Risk from './components/Risk';
 import Prediction from './components/Prediction';
@@ -65,8 +65,15 @@ export default function App() {
         <Route element={<Layout />}>
           <Route path="assistant" element={<Assistant />} />
           <Route path="assistant/:sessionId" element={<Assistant />} />
-          <Route path="documents" element={<Kanban />} />
-          <Route path="routes" element={<RouteOptimizer />} />
+
+          <Route 
+            path="routes" 
+            element={
+              <ProtectedRoute>
+                <RouteOptimizer />
+              </ProtectedRoute>
+            } 
+          />
           <Route path="risks" element={<Risk />} />
           <Route 
             path="prediction" 

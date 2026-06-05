@@ -5,6 +5,7 @@ import {
   Zap, Wallet, TreePine, Crown, Scale, Route, Star, X, ArrowDownUp
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useAuth } from '../lib/auth';
 
 /* ──────────────────────────── Types ──────────────────────────── */
 interface RouteStep {
@@ -232,6 +233,7 @@ function reliabilityLabel(score: number) {
    MAIN COMPONENT
    ══════════════════════════════════════════════════════════════ */
 export default function RouteOptimizer() {
+  const { user } = useAuth();
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [preset, setPreset] = useState('balanced');
@@ -283,7 +285,7 @@ export default function RouteOptimizer() {
       const res = await fetch('http://localhost:8000/api/route/optimize', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ origin, destination, preset }),
+        body: JSON.stringify({ origin, destination, preset, user_id: user?.id }),
       });
       if (!res.ok) {
         const errData = await res.json();
@@ -291,6 +293,8 @@ export default function RouteOptimizer() {
       }
       const data: RouteResponse = await res.json();
       setRouteData(data);
+      // Notify sidebar to refresh routing history
+      window.dispatchEvent(new Event('routingHistoryUpdated'));
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -325,10 +329,23 @@ export default function RouteOptimizer() {
               Multi-Factor Route Optimizer
             </h1>
           </div>
-          <p className="text-stone-500 ml-[52px]">
-            Dijkstra-based multi-criteria optimizer — choose your strategy and let the
-            algorithm find the best multi-hop route across 220+ nodes.
-          </p>
+          <div className="ml-[52px] max-w-2xl">
+            <p className="text-[15px] leading-relaxed text-stone-600">
+              Enterprise-grade global logistics optimization. Configure your strategic priorities and let our intelligent routing engine orchestrate the most efficient multi-modal supply chain pathways.
+            </p>
+            <div className="flex items-center gap-3 mt-3.5">
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-green-50 text-green-700 text-[11px] font-bold tracking-wide uppercase border border-green-200/60">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                Live Data
+              </span>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-stone-100 text-stone-600 text-[11px] font-bold tracking-wide uppercase border border-stone-200/60">
+                220+ Global Hubs
+              </span>
+              <span className="inline-flex items-center px-2.5 py-1 rounded-md bg-blue-50 text-blue-700 text-[11px] font-bold tracking-wide uppercase border border-blue-200/60">
+                Multi-Modal
+              </span>
+            </div>
+          </div>
         </div>
 
         {/* ─────────── CONTROL PANEL ─────────── */}

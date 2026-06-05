@@ -136,6 +136,20 @@ async def get_history_endpoint(session_id: str):
         print(f"❌ History retrieval error: {e}")
         return {"error": str(e)}
 
+
+@app.delete("/session/{session_id}")
+async def delete_session(session_id: str):
+    """Deletes all messages for a given chat session."""
+    try:
+        with psycopg.connect(DATABASE_URL) as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM chat_history WHERE session_id = %s", (session_id,))
+                conn.commit()
+        return {"status": "success"}
+    except Exception as e:
+        print(f"❌ Session delete error: {e}")
+        return {"error": str(e)}
+
 # ─────────────────────────────────────────────
 # 6. THE TEXT CHAT ENDPOINT (Streaming + Memory)
 # ─────────────────────────────────────────────
@@ -635,49 +649,40 @@ async def chat_with_multiple_documents(
         
         multi_doc_context = "\n\n---\n\n".join(context_parts)
 
+        # Guard against Groq TPM limits — cap document context at ~60K chars (~15K tokens)
+        MAX_CONTEXT_CHARS = 60000
+        truncated_warning = ""
+        if len(multi_doc_context) > MAX_CONTEXT_CHARS:
+            multi_doc_context = multi_doc_context[:MAX_CONTEXT_CHARS]
+            truncated_warning = "\n\n⚠️ Note: The document was very large and has been truncated. The analysis covers the first portion of the content."
+            print(f"⚠️ Document context truncated from {len(multi_doc_context)} to {MAX_CONTEXT_CHARS} chars")
+
         # 3. Create the multi-document intelligence prompt
-        context_prompt = f"""### ROLE ###
-You are the Lead Trade Compliance Auditor for BridgeAI. Your mission is to provide the EXACT tariff classification and detect discrepancies across trade documents.
+        context_prompt = f"""You are the Lead Trade Compliance Auditor for BridgeAI.
 
-### THE DECISION LOGIC (MANDATORY) ###
-You must map the items found in the documents to the EXACT tariff row in our database. Do not just provide a list of options; make a definitive choice based on the evidence.
+CRITICAL OUTPUT RULES — FOLLOW EXACTLY:
+- DO NOT explain your thought process, reasoning, or analysis steps.
+- DO NOT write preamble like "Let me analyze...", "Based on the document...", "The task is to...", "Document Context:", "Analysis:", etc.
+- DO NOT echo or repeat the prompt instructions back.
+- DO NOT describe what you are about to do. Just do it.
+- Jump DIRECTLY to the final polished answer with no introduction.
 
-### TASK ###
-Analyze the {len(files)} attached documents and answer the user's question. 
-If the user asks to 'find risks' or 'check consistency', compare the data points between all documents (e.g., check if the weight on the Invoice matches the Bill of Lading).
+Here is the extracted data from {len(files)} uploaded document(s):
 
-### DOCUMENT CONTEXT (EXTRACTED DATA) ###
 {multi_doc_context}
 
-### DOMAIN-SPECIFIC KNOWLEDGE ###
-- HS CODES: Treat as strings. Check if they match across documents.
-- TARIFFS: Use the SQL tool if the user asks for rates.
-- DISCREPANCIES: If Document A says '10 units' and Document B says '12 units', flag this as a major compliance risk.
+Use the following knowledge internally (do NOT repeat these rules in your answer):
+- HS CODES are strings. Cross-check them across documents.
+- If a tariff rate is needed, use the 'search_structured_database' tool silently.
+- Flag any mismatched quantities, weights, or descriptions between documents as ⚠️ compliance risks.
+- Map document descriptions to the closest 'description_fr' in the database.
 
-### MATCHING PROTOCOL ###
-1. EXTRACT: Identify specific item details from the documents (e.g., 'Used', 'New', 'Engine size', 'Weight', 'Material').
-2. CROSS-CHECK: Compare Document A (Invoice) vs Document B (Bill of Lading). Flag any mismatched quantities or descriptions.
-3. QUERY: Use 'search_structured_database' to get ALL sub-codes for the relevant HS category.
-4. SEMANTIC MAP: Compare the document description to the 'description_fr' in the database.
-   - Example: Document says 'Second hand' -> Map to 'véhicules usagés'.
-   - Example: Document says 'New' -> Map to 'véhicules neufs'.
-5. VERDICT: State exactly which specific code applies and the precise duty rate.
+Your answer MUST follow this structure exactly:
+🎯 **Target Classification: [HS CODE]** (if applicable)
+Then the reasoning, duty rate, a markdown comparison table, and any ⚠️ warnings.
+If the document is not trade-related, simply provide a clear professional summary answering the user's question.
 
-
-### STRICT CONSTRAINTS ###
-- NO HALLUCINATION: If tools return no data, state you don't have that record.
-- CROSS-CHECK: Always mention which documents you are comparing.
-
-### OUTPUT FORMAT ###
-1. Start with a direct verdict: "🎯 **Target Classification: [HS CODE]**"
-2. Provide the **Reasoning** (Why this row matches the document description).
-3. Provide the **💰 Final Duty Rate**.
-4. Display a professional Markdown Table showing the matching row and 1-2 close alternatives for transparency.
-5. Use ⚠️ WARNING for any data mismatches found between the {len(files)} files.
-
-[USER QUESTION]
-{question}
-"""
+User question: {question}{truncated_warning}"""
         # 4. Role lookup for correct history badge
         user_id = session_id.split("___")[0]
         actual_role = get_user_role_from_id(user_id)

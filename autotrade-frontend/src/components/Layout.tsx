@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import {
-  MessageSquare, FileText, Map, AlertTriangle,
+  MessageSquare, Map, AlertTriangle,
   Plus, MessageCircle, LogOut, ShieldCheck, ChevronDown, Clock, Timer, Loader2,
-  PanelLeftClose, PanelLeft
+  PanelLeftClose, PanelLeft, Trash2, Route
 } from 'lucide-react';
 import { useAuth } from '../lib/auth';
-import { getRecentSessions, getPredictionHistory } from '../lib/api';
+import { getRecentSessions, getPredictionHistory, getRoutingHistory, deleteSession, deletePrediction, deleteRoutingHistory } from '../lib/api';
 
 type ChatSession = { id: string; title: string; last_activity: string };
 
@@ -20,7 +20,6 @@ function smartTitle(raw: string): string {
   if (!cleaned || GENERIC_TITLES.has(cleaned) || cleaned.length < 4) {
     return 'New Trade Assessment';
   }
-  // Capitalise first letter
   return raw.charAt(0).toUpperCase() + raw.slice(1);
 }
 
@@ -48,6 +47,9 @@ export default function Layout() {
   const [predictionHistory, setPredictionHistory] = useState<any[]>([]);
   const [predictionHistoryOpen, setPredictionHistoryOpen] = useState(false);
   const [isLoadingPredictionHistory, setIsLoadingPredictionHistory] = useState(false);
+  const [routingHistory, setRoutingHistory] = useState<any[]>([]);
+  const [routingHistoryOpen, setRoutingHistoryOpen] = useState(false);
+  const [isLoadingRoutingHistory, setIsLoadingRoutingHistory] = useState(false);
 
   const [sidebarWidth, setSidebarWidth] = useState(256);
   const [isSidebarVisible, setIsSidebarVisible] = useState(true);
@@ -104,6 +106,21 @@ export default function Layout() {
     }
   };
 
+  const loadRoutingHistory = async () => {
+    if (!user) return;
+    setIsLoadingRoutingHistory(true);
+    try {
+      const res = await getRoutingHistory(user.id);
+      if (res?.status === 'success' && res?.data) {
+        setRoutingHistory(res.data);
+      }
+    } catch (err) {
+      console.error('Failed to load routing history', err);
+    } finally {
+      setIsLoadingRoutingHistory(false);
+    }
+  };
+
   useEffect(() => {
     loadRecentChats();
     window.addEventListener('recentChatsUpdated', loadRecentChats);
@@ -116,17 +133,27 @@ export default function Layout() {
     return () => window.removeEventListener('predictionHistoryUpdated', loadPredictionHistory);
   }, [user]);
 
-  // Auto-expand the assistant accordion when on an assistant route
+  useEffect(() => {
+    loadRoutingHistory();
+    window.addEventListener('routingHistoryUpdated', loadRoutingHistory);
+    return () => window.removeEventListener('routingHistoryUpdated', loadRoutingHistory);
+  }, [user]);
+
   useEffect(() => {
     if (location.pathname.startsWith('/assistant')) {
       setAssistantOpen(true);
     }
   }, [location.pathname]);
 
-  // Auto-expand the prediction history accordion when on the prediction route
   useEffect(() => {
     if (location.pathname.startsWith('/prediction')) {
       setPredictionHistoryOpen(true);
+    }
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (location.pathname.startsWith('/routes')) {
+      setRoutingHistoryOpen(true);
     }
   }, [location.pathname]);
 
@@ -137,6 +164,52 @@ export default function Layout() {
 
   const handleNewAssessment = () => {
     navigate('/assistant', { replace: true });
+  };
+
+  const handleNewPrediction = () => {
+    window.location.href = '/prediction';
+  };
+
+  const handleNewRoute = () => {
+    window.location.href = '/routes';
+  };
+
+  // Delete handlers
+  const handleDeleteSession = async (e: React.MouseEvent, sessionId: string) => {
+    e.stopPropagation();
+    try {
+      await deleteSession(sessionId);
+      setRecentChats((prev) => prev.filter((c) => c.id !== sessionId));
+      if (location.pathname === `/assistant/${sessionId}`) {
+        navigate('/assistant', { replace: true });
+      }
+    } catch (err) {
+      console.error('Failed to delete session', err);
+    }
+  };
+
+  const handleDeletePrediction = async (e: React.MouseEvent, predictionId: number) => {
+    e.stopPropagation();
+    try {
+      await deletePrediction(predictionId);
+      setPredictionHistory((prev) => prev.filter((p) => p.id !== predictionId));
+      const searchParams = new URLSearchParams(location.search);
+      if (searchParams.get('id') === String(predictionId)) {
+        navigate('/prediction', { replace: true });
+      }
+    } catch (err) {
+      console.error('Failed to delete prediction', err);
+    }
+  };
+
+  const handleDeleteRoute = async (e: React.MouseEvent, routeId: number) => {
+    e.stopPropagation();
+    try {
+      await deleteRoutingHistory(routeId);
+      setRoutingHistory((prev) => prev.filter((r) => r.id !== routeId));
+    } catch (err) {
+      console.error('Failed to delete route', err);
+    }
   };
 
   // Derive active session from URL
@@ -191,43 +264,38 @@ export default function Layout() {
             </button>
           </div>
 
-
-        {/* New Assessment CTA */}
-        <div className="px-4 mb-4">
-          <button
-            onClick={handleNewAssessment}
-            className="w-full flex items-center space-x-2 bg-white border border-stone-200 rounded-xl px-3 py-2 text-sm text-stone-600 hover:bg-stone-50 transition-colors shadow-sm"
-          >
-            <Plus size={16} />
-            <span>New Assessment</span>
-          </button>
-        </div>
-
         {/* Nav */}
         <nav className="flex-1 px-4 space-y-0.5 overflow-y-auto scrollbar-thin scrollbar-thumb-stone-200 scrollbar-track-transparent">
 
-          {/* ── Assistant accordion ── */}
+          {/* ═══════════ Assistant accordion ═══════════ */}
           <div>
-            {/* Parent trigger */}
-            <button
-              onClick={() => setAssistantOpen(o => !o)}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm transition-colors ${
-                isAssistantActive
-                  ? 'bg-stone-200/50 font-medium text-stone-900'
-                  : 'text-stone-600 hover:bg-stone-200/30'
-              }`}
-            >
-              <span className="flex items-center space-x-3">
-                <MessageSquare size={18} className="opacity-80" />
-                <span>Assistant</span>
-              </span>
-              <ChevronDown
-                size={14}
-                className={`text-stone-400 transition-transform duration-200 ${assistantOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
+            <div className="flex items-center">
+              <button
+                onClick={() => setAssistantOpen(o => !o)}
+                className={`flex-1 flex items-center justify-between px-3 py-2 rounded-xl text-sm transition-colors ${
+                  isAssistantActive
+                    ? 'bg-stone-200/50 font-medium text-stone-900'
+                    : 'text-stone-600 hover:bg-stone-200/30'
+                }`}
+              >
+                <span className="flex items-center space-x-3">
+                  <MessageSquare size={18} className="opacity-80" />
+                  <span>Assistant</span>
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={`text-stone-400 transition-transform duration-200 ${assistantOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              <button
+                onClick={handleNewAssessment}
+                className="ml-1 p-1.5 rounded-lg text-stone-400 hover:text-amber-600 hover:bg-amber-50 transition-colors"
+                title="New Assessment"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
 
-            {/* Nested session list */}
             {assistantOpen && (
               <div className="mt-0.5 ml-4 pl-3 border-l border-stone-200 space-y-0.5">
                 {recentChats.length === 0 ? (
@@ -246,7 +314,6 @@ export default function Layout() {
                             : 'text-stone-500 hover:bg-stone-200/40 hover:text-stone-800'
                         }`}
                       >
-                        {/* Amber active bar */}
                         {isActive && (
                           <span className="absolute left-0 top-1.5 bottom-1.5 w-0.5 bg-amber-500 rounded-full" />
                         )}
@@ -263,6 +330,13 @@ export default function Layout() {
                             </p>
                           )}
                         </div>
+                        <button
+                          onClick={(e) => handleDeleteSession(e, chat.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 hover:text-red-500 text-stone-400 transition-all flex-shrink-0"
+                          title="Delete conversation"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </button>
                     );
                   })
@@ -271,53 +345,139 @@ export default function Layout() {
             )}
           </div>
 
-          {/* ── Other nav items ── */}
-          {[
-            { label: 'Documents', icon: FileText, to: '/documents' },
-            { label: 'Routes', icon: Map, to: '/routes' },
-            { label: 'Risks', icon: AlertTriangle, to: '/risks' },
-          ].map((item) => (
-            <NavLink
-              key={item.label}
-              to={item.to}
-              className={({ isActive }) =>
-                `flex items-center space-x-3 px-3 py-2 rounded-xl text-sm transition-colors ${
-                  isActive ? 'bg-stone-200/50 font-medium text-stone-900' : 'text-stone-600 hover:bg-stone-200/30'
-                }`
-              }
-            >
-              <item.icon size={18} className="opacity-80" />
-              <span>{item.label}</span>
-            </NavLink>
-          ))}
-
-          {/* ── AI Delay Prediction collapsible folder ── */}
+          {/* ═══════════ Routes accordion (with history) ═══════════ */}
           <div>
-            {/* Parent trigger */}
-            <button
-              onClick={() => {
-                setPredictionHistoryOpen(o => !o);
-                if (!location.pathname.startsWith('/prediction')) {
-                  navigate('/prediction');
-                }
-              }}
-              className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-sm transition-colors ${
-                location.pathname.startsWith('/prediction')
-                  ? 'bg-stone-200/50 font-medium text-stone-900'
-                  : 'text-stone-600 hover:bg-stone-200/30'
-              }`}
-            >
-              <span className="flex items-center space-x-3">
-                <Timer size={18} className="opacity-80" />
-                <span>AI Delay Prediction</span>
-              </span>
-              <ChevronDown
-                size={14}
-                className={`text-stone-400 transition-transform duration-200 ${predictionHistoryOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
+            <div className="flex items-center">
+              <button
+                onClick={() => {
+                  setRoutingHistoryOpen(o => !o);
+                  if (!location.pathname.startsWith('/routes')) {
+                    navigate('/routes');
+                  }
+                }}
+                className={`flex-1 flex items-center justify-between px-3 py-2 rounded-xl text-sm transition-colors ${
+                  location.pathname.startsWith('/routes')
+                    ? 'bg-stone-200/50 font-medium text-stone-900'
+                    : 'text-stone-600 hover:bg-stone-200/30'
+                }`}
+              >
+                <span className="flex items-center space-x-3">
+                  <Route size={18} className="opacity-80" />
+                  <span>Routes</span>
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={`text-stone-400 transition-transform duration-200 ${routingHistoryOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              <button
+                onClick={handleNewRoute}
+                className="ml-1 p-1.5 rounded-lg text-stone-400 hover:text-amber-600 hover:bg-amber-50 transition-colors"
+                title="New Route"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
 
-            {/* Nested prediction history list */}
+            {routingHistoryOpen && (
+              <div className="mt-0.5 ml-4 pl-3 border-l border-stone-200 space-y-0.5">
+                {isLoadingRoutingHistory ? (
+                  <div className="flex items-center gap-2 py-2 px-2">
+                    <Loader2 size={12} className="animate-spin text-stone-400" />
+                    <span className="text-[11px] text-stone-400 font-medium">Loading history...</span>
+                  </div>
+                ) : routingHistory.length === 0 ? (
+                  <p className="text-[11px] text-stone-400 py-2 px-2 italic">No routes logged</p>
+                ) : (
+                  routingHistory.map((item) => {
+                    const date = new Date(item.created_at).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                    });
+                    const label = `${item.origin} → ${item.destination}`;
+                    const truncatedLabel = label.length > 28 ? label.slice(0, 25) + '...' : label;
+
+                    return (
+                      <button
+                        key={item.id}
+                        onClick={() => navigate('/routes')}
+                        className="relative w-full flex items-start gap-2 px-2.5 py-2 rounded-lg text-left transition-colors group text-stone-500 hover:bg-stone-200/40 hover:text-stone-800"
+                      >
+                        <Map
+                          size={14}
+                          className="flex-shrink-0 mt-0.5 opacity-40 group-hover:opacity-70"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium leading-snug truncate">{truncatedLabel}</p>
+                          <p className="text-[10px] mt-0.5 flex items-center gap-1 text-stone-400">
+                            <span>{date}</span>
+                            <span className="ml-auto bg-stone-100 text-stone-600 px-1 py-0.2 rounded text-[9px] font-semibold capitalize">
+                              {item.preset}
+                            </span>
+                          </p>
+                        </div>
+                        <button
+                          onClick={(e) => handleDeleteRoute(e, item.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 hover:text-red-500 text-stone-400 transition-all flex-shrink-0"
+                          title="Delete route"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ═══════════ Risks ═══════════ */}
+          <NavLink
+            to="/risks"
+            className={({ isActive }) =>
+              `flex items-center space-x-3 px-3 py-2 rounded-xl text-sm transition-colors ${
+                isActive ? 'bg-stone-200/50 font-medium text-stone-900' : 'text-stone-600 hover:bg-stone-200/30'
+              }`
+            }
+          >
+            <AlertTriangle size={18} className="opacity-80" />
+            <span>Risks</span>
+          </NavLink>
+
+          {/* ═══════════ AI Delay Prediction accordion ═══════════ */}
+          <div>
+            <div className="flex items-center">
+              <button
+                onClick={() => {
+                  setPredictionHistoryOpen(o => !o);
+                  if (!location.pathname.startsWith('/prediction')) {
+                    navigate('/prediction');
+                  }
+                }}
+                className={`flex-1 flex items-center justify-between px-3 py-2 rounded-xl text-sm transition-colors ${
+                  location.pathname.startsWith('/prediction')
+                    ? 'bg-stone-200/50 font-medium text-stone-900'
+                    : 'text-stone-600 hover:bg-stone-200/30'
+                }`}
+              >
+                <span className="flex items-center space-x-3">
+                  <Timer size={18} className="opacity-80" />
+                  <span>AI Delay Prediction</span>
+                </span>
+                <ChevronDown
+                  size={14}
+                  className={`text-stone-400 transition-transform duration-200 ${predictionHistoryOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              <button
+                onClick={handleNewPrediction}
+                className="ml-1 p-1.5 rounded-lg text-stone-400 hover:text-amber-600 hover:bg-amber-50 transition-colors"
+                title="New Prediction"
+              >
+                <Plus size={16} />
+              </button>
+            </div>
+
             {predictionHistoryOpen && (
               <div className="mt-0.5 ml-4 pl-3 border-l border-stone-200 space-y-0.5">
                 {isLoadingPredictionHistory ? (
@@ -367,6 +527,13 @@ export default function Layout() {
                             )}
                           </p>
                         </div>
+                        <button
+                          onClick={(e) => handleDeletePrediction(e, item.id)}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-red-50 hover:text-red-500 text-stone-400 transition-all flex-shrink-0"
+                          title="Delete prediction"
+                        >
+                          <Trash2 size={13} />
+                        </button>
                       </button>
                     );
                   })

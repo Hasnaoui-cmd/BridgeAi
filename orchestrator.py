@@ -184,14 +184,12 @@ async def stream_orchestrator(question: str, past_messages: list):
         "You are the Master Orchestrator for an Enterprise BridgeAI. "
         "Your MOST IMPORTANT job is to route the user's question to the correct tool.\n\n"
         "ROUTING RULES (follow strictly):\n"
-        "1. Use 'search_structured_database' ONLY when the user asks about a SPECIFIC "
-        "HS Code, product name, numeric tariff rate, tax percentage, duty amount, or inventory data. "
-        "Examples: 'What is the tariff for HS 8703?', 'Show me rates for cars', 'List products in my inventory'.\n"
-        "2. Use 'search_legal_documents' for ALL general, conceptual, or procedural questions "
-        "about trade, customs, regulations, laws, or definitions. "
-        "Examples: 'What is the BADR system?', 'How do I clear customs?', 'What are the duties of a customs broker?', "
-        "'Explain the import procedure in Morocco'.\n"
-        "3. If unsure, DEFAULT to 'search_legal_documents'. Never guess with the SQL database.\n\n"
+        "1. For comprehensive answers, you are ENCOURAGED to use BOTH 'search_structured_database' AND 'search_legal_documents' in parallel.\n"
+        "2. Always use 'search_structured_database' to find SPECIFIC "
+        "HS Codes, product names, numeric tariff rates, tax percentages, duty amounts, or inventory data.\n"
+        "3. Always use 'search_legal_documents' to find procedural requirements, regulatory documents, certificates, customs laws, and definitions.\n"
+        "4. If a user asks about importing, exporting, or trading a specific product, YOU MUST CALL BOTH TOOLS: use SQL for the rates, and RAG for the required documents/procedures.\n"
+        "5. CRITICAL: NEVER explain your thought process. NEVER say 'I will use...' or 'Let me search...'. DO NOT output any introductory filler sentences. If you need a tool, just execute the tool silently without outputting any text.\n\n"
         "Once you have the tool results, synthesize them into a single, cohesive, professional answer. "
         "Always answer the user's LATEST message. Do NOT re-answer previous questions."
         "Always respond in the SAME language as the user."
@@ -240,6 +238,9 @@ async def stream_orchestrator(question: str, past_messages: list):
 
     # --- E. EXECUTE AS A REAL-TIME STREAM ---
     try:
+        buffer = ""
+        in_thought = False
+        
         # astream_events lets us watch the AI as it works, step by step!
         async for event in app.astream_events(initial_state, version="v2", config={"run_name": "Master_Orchestrator"}):
             kind = event["event"]
@@ -266,9 +267,40 @@ async def stream_orchestrator(question: str, past_messages: list):
                     has_tool_chunks = getattr(chunk, "tool_call_chunks", None)
                     
                     if not has_tool_calls and not has_tool_chunks and chunk.content:
-                        yield f"data: {json.dumps({'type': 'token', 'content': chunk.content})}\n\n"
-                        # Flush the event loop so the chunk is sent immediately
-                        await asyncio.sleep(0)
+                        buffer += chunk.content
+                        
+                        while buffer:
+                            if in_thought:
+                                if "</think>" in buffer:
+                                    buffer = buffer.split("</think>", 1)[1]
+                                    in_thought = False
+                                else:
+                                    break
+                            else:
+                                if "<think>" in buffer:
+                                    before, after = buffer.split("<think>", 1)
+                                    if before:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': before})}\n\n"
+                                        await asyncio.sleep(0)
+                                    buffer = after
+                                    in_thought = True
+                                else:
+                                    last_lt = buffer.rfind("<")
+                                    if last_lt != -1 and "<think>".startswith(buffer[last_lt:]):
+                                        if last_lt > 0:
+                                            yield f"data: {json.dumps({'type': 'token', 'content': buffer[:last_lt]})}\n\n"
+                                            await asyncio.sleep(0)
+                                        buffer = buffer[last_lt:]
+                                        break
+                                    else:
+                                        yield f"data: {json.dumps({'type': 'token', 'content': buffer})}\n\n"
+                                        await asyncio.sleep(0)
+                                        buffer = ""
+                                        break
+
+        if buffer and not in_thought:
+            yield f"data: {json.dumps({'type': 'token', 'content': buffer})}\n\n"
+            await asyncio.sleep(0)
 
         # When the loop finishes, send the "done" signal
         final_meta = {

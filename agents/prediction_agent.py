@@ -341,8 +341,6 @@ def rag_node(state: PredictionState) -> dict:
 
     # Build targeted compliance query
     query = (
-        f"STRICT INSTRUCTION: Search BOTH the 'documents' collection AND the 'document_p' "
-        f"pgvector tables in Supabase. "
         f"What regulatory documents, certificates, or permits are required for "
         f"{direction.lower()}ing goods "
     )
@@ -827,13 +825,19 @@ def route_after_extraction(state: PredictionState) -> str:
 
     if state.get("final_prediction"):
         old_vars = state["final_prediction"].get("variables", {})
+        # Helper to safely compare strings ignoring case
+        def cmp(v1, v2):
+            if isinstance(v1, str) and isinstance(v2, str):
+                return v1.strip().lower() == v2.strip().lower()
+            return v1 == v2
+
         # If none of the variables have changed, it's a follow-up question!
-        if (state.get("direction") == old_vars.get("direction") and
-            state.get("transport_mode") == old_vars.get("transport_mode") and
-            state.get("weight") == old_vars.get("weight") and
-            state.get("origin") == old_vars.get("origin") and
-            state.get("destination") == old_vars.get("destination") and
-            state.get("shipment_date") == old_vars.get("shipment_date")):
+        if (cmp(state.get("direction"), old_vars.get("direction")) and
+            cmp(state.get("transport_mode"), old_vars.get("transport_mode")) and
+            cmp(state.get("weight"), old_vars.get("weight")) and
+            cmp(state.get("origin"), old_vars.get("origin")) and
+            cmp(state.get("destination"), old_vars.get("destination")) and
+            cmp(state.get("shipment_date"), old_vars.get("shipment_date"))):
             return "follow_up_node"
 
     # New or updated shipment details, continue to SQL node

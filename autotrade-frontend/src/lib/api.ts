@@ -56,6 +56,52 @@ async function consumeSSEStream(response: Response, callbacks: StreamCallbacks) 
   const decoder = new TextDecoder();
   let buffer = '';
 
+  // Stateful filter to strip <think>...</think> blocks across chunked tokens
+  let inThinking = false;
+  let thinkBuf = '';
+
+  const emitCleanToken = (raw: string) => {
+    thinkBuf += raw;
+    let clean = '';
+
+    while (thinkBuf.length > 0) {
+      if (inThinking) {
+        const endIdx = thinkBuf.indexOf('</think>');
+        if (endIdx !== -1) {
+          thinkBuf = thinkBuf.slice(endIdx + 8);
+          inThinking = false;
+        } else {
+          // Still inside think block — discard and wait for more
+          thinkBuf = '';
+          break;
+        }
+      } else {
+        const startIdx = thinkBuf.indexOf('<think>');
+        if (startIdx !== -1) {
+          clean += thinkBuf.slice(0, startIdx);
+          thinkBuf = thinkBuf.slice(startIdx + 7);
+          inThinking = true;
+        } else {
+          // Check for a partial <think> tag building at the end
+          const lastLt = thinkBuf.lastIndexOf('<');
+          if (lastLt !== -1 && '<think>'.startsWith(thinkBuf.slice(lastLt))) {
+            clean += thinkBuf.slice(0, lastLt);
+            thinkBuf = thinkBuf.slice(lastLt);
+            break;
+          } else {
+            clean += thinkBuf;
+            thinkBuf = '';
+            break;
+          }
+        }
+      }
+    }
+
+    if (clean) {
+      callbacks.onToken(clean);
+    }
+  };
+
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -79,12 +125,17 @@ async function consumeSSEStream(response: Response, callbacks: StreamCallbacks) 
 
             switch (data.type) {
               case 'token':
-                callbacks.onToken(data.content);
+                emitCleanToken(data.content);
                 break;
               case 'status':
                 callbacks.onStatus(data.content);
                 break;
               case 'done':
+                // Flush any remaining non-think buffer
+                if (thinkBuf && !inThinking) {
+                  callbacks.onToken(thinkBuf);
+                  thinkBuf = '';
+                }
                 callbacks.onDone(data.sources || [], data.agents || '');
                 break;
               case 'transcription':
@@ -206,6 +257,39 @@ export async function clearHistory(sessionId: string) {
 }
 
 // ─────────────────────────────────────────────
+// 5b. Delete a chat session — DELETE /session/{session_id}
+// ─────────────────────────────────────────────
+export async function deleteSession(sessionId: string) {
+  const res = await fetch(`${API_URL}/session/${sessionId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete session');
+  return res.json();
+}
+
+// ─────────────────────────────────────────────
+// 5c. Delete a prediction — DELETE /api/predict/{prediction_id}
+// ─────────────────────────────────────────────
+export async function deletePrediction(predictionId: number) {
+  const res = await fetch(`${API_URL}/api/predict/${predictionId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete prediction');
+  return res.json();
+}
+
+// ─────────────────────────────────────────────
+// 5d. Routing History — GET /api/route/history + DELETE /api/route/{id}
+// ─────────────────────────────────────────────
+export async function getRoutingHistory(userId: string) {
+  const res = await fetch(`${API_URL}/api/route/history?user_id=${userId}`);
+  if (!res.ok) throw new Error('Failed to load routing history');
+  return res.json();
+}
+
+export async function deleteRoutingHistory(routeId: number) {
+  const res = await fetch(`${API_URL}/api/route/${routeId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete route');
+  return res.json();
+}
+
+// ─────────────────────────────────────────────
 // 7. Prediction Chat — POST /api/predict/chat (JSON)
 // ─────────────────────────────────────────────
 export interface PredictionShapCause {
@@ -226,19 +310,22 @@ export interface PredictionData {
     origin: string;
     destination: string;
   } | null;
+  chat_history?: { role: string; content: string }[] | null;
 }
 
 export interface PredictionResponse {
   status: 'waiting_for_info' | 'success';
   message: string;
   prediction_data: PredictionData | null;
+  prediction_id?: number | null;
 }
 
 export async function predictChat(
   conversationHistory: { role: string; content: string }[],
   message: string,
   userId: string,
-  currentPrediction?: PredictionData | null
+  currentPrediction?: PredictionData | null,
+  predictionId?: number | null
 ): Promise<PredictionResponse> {
   const res = await fetch(`${API_URL}/api/predict/chat`, {
     method: 'POST',
@@ -248,6 +335,7 @@ export async function predictChat(
       message,
       current_prediction: currentPrediction || null,
       user_id: userId,
+      prediction_id: predictionId || null,
     }),
   });
 
@@ -289,13 +377,13 @@ export async function streamVisionChat(
   callbacks: StreamCallbacks
 ): Promise<void> {
   const formData = new FormData();
-  formData.append('file', file);
+  formData.append('files', file);
   formData.append('question', question);
   formData.append('session_id', sessionId);
 
   // NOTE: Do NOT set Content-Type header — the browser must set it automatically
   // so the multipart boundary is included correctly.
-  const res = await fetch(`${API_URL}/chat/vision`, {
+  const res = await fetch(`${API_URL}/chat/documents`, {
     method: 'POST',
     body: formData,
   });
