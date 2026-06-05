@@ -564,10 +564,16 @@ export default function Prediction() {
       }
       const found = pool.find((h) => String(h.id) === predictionId);
       if (found) {
-        setMessages([
-          { role: 'user', content: found.user_message },
-          { role: 'ai', content: found.agent_response },
-        ]);
+        // If chat history is stored in prediction_data, restore the whole conversation
+        if (found.prediction_data && found.prediction_data.chat_history) {
+          setMessages(found.prediction_data.chat_history as ChatMessage[]);
+        } else {
+          // Fallback to legacy single-message behavior
+          setMessages([
+            { role: 'user', content: found.user_message },
+            { role: 'ai', content: found.agent_response },
+          ]);
+        }
         setPrediction(found.prediction_data);
       }
     };
@@ -584,11 +590,21 @@ export default function Prediction() {
     setLoading(true);
     try {
       const historyPayload = messages.slice(1).map((m) => ({ role: m.role, content: m.content }));
-      const response: PredictionResponse = await predictChat(historyPayload, userMessage, user?.id || '', prediction as any);
+      const pId = predictionId ? Number(predictionId) : null;
+      
+      const response: PredictionResponse = await predictChat(historyPayload, userMessage, user?.id || '', prediction as any, pId);
+      
       setMessages((prev) => [...prev, { role: 'ai', content: response.message }]);
+      
       if (response.status === 'success' && response.prediction_data) {
         setPrediction(response.prediction_data as any);
       }
+      
+      // If this is a new conversation, update the URL so follow-up messages go to the same ID
+      if (response.prediction_id && !predictionId) {
+        setSearchParams({ id: String(response.prediction_id) });
+      }
+      
       fetchHistoryList();
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : 'Unknown error';
@@ -669,22 +685,20 @@ export default function Prediction() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4 scrollbar-thin scrollbar-thumb-stone-200">
+        <div className="flex-1 overflow-y-auto px-6 py-4 space-y-6 scrollbar-thin scrollbar-thumb-stone-200">
           {messages.map((msg, i) => (
             <div key={i} className={`flex gap-3 ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               {msg.role === 'ai' && (
-                <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 mt-0.5">
+                <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center flex-shrink-0 mt-1">
                   <Bot size={16} className="text-amber-700" />
                 </div>
               )}
-              <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed ${
-                msg.role === 'user' ? 'bg-stone-800 text-stone-50' : 'bg-stone-100 text-stone-700'
-              }`}>
+              <div className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed bg-stone-100 text-stone-700`}>
                 {msg.content.split('\n').map((line, li) => (
-                  <p key={li} className={li > 0 ? 'mt-1.5' : ''}>
+                  <p key={li} className={`text-inherit ${li > 0 ? 'mt-1.5' : ''}`}>
                     {line.split(/(\*\*.*?\*\*)/).map((part, pi) =>
                       part.startsWith('**') && part.endsWith('**')
-                        ? <strong key={pi} className="font-semibold">{part.slice(2, -2)}</strong>
+                        ? <strong key={pi} className="font-semibold text-inherit">{part.slice(2, -2)}</strong>
                         : <span key={pi}>{part}</span>
                     )}
                   </p>

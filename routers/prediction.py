@@ -37,6 +37,7 @@ class PredictionData(BaseModel):
     document_warning: Optional[str] = None
     env_scores: Optional[dict] = None
     variables: Optional[dict] = None
+    chat_history: Optional[list[dict]] = None  # Added to store full conversation
 
 
 class ChatMessage(BaseModel):
@@ -49,12 +50,14 @@ class PredictionRequest(BaseModel):
     message: str  # The latest user message
     current_prediction: Optional[PredictionData] = None
     user_id: str
+    prediction_id: Optional[int] = None  # Added to identify existing conversation
 
 
 class PredictionResponse(BaseModel):
     status: str  # "waiting_for_info" | "success"
     message: str
     prediction_data: Optional[PredictionData] = None
+    prediction_id: Optional[int] = None  # Return ID so frontend can keep track
 
 
 # ─────────────────────────────────────────────
@@ -96,24 +99,48 @@ async def predict_chat(request: PredictionRequest):
                 variables=prediction_data_to_save.get("variables")
             )
         
+        # Inject full chat history into prediction_data for frontend to restore
+        full_history = request.conversation_history + [ChatMessage(role="user", content=request.message), ChatMessage(role="ai", content=result["message"])]
+        full_history_dicts = [m.model_dump() for m in full_history]
+        
+        if prediction_data:
+            prediction_data.chat_history = full_history_dicts
+        else:
+            prediction_data = PredictionData(chat_history=full_history_dicts)
+            
+        prediction_data_to_save = prediction_data.model_dump()
+        
         # Log to Supabase prediction_history table
+        inserted_id = request.prediction_id
         try:
             # Handle empty user_id string to prevent UUID parsing errors
             valid_user_id = request.user_id if request.user_id and request.user_id.strip() != "" else None
             
-            supabase_admin.table("prediction_history").insert({
-                "user_id": valid_user_id,
-                "user_message": request.message,
-                "agent_response": result["message"],
-                "prediction_data": prediction_data_to_save
-            }).execute()
+            if request.prediction_id:
+                # Update existing conversation row
+                supabase_admin.table("prediction_history").update({
+                    "user_message": full_history[0].content,  # Keep the first user message as the title
+                    "agent_response": result["message"],
+                    "prediction_data": prediction_data_to_save
+                }).eq("id", request.prediction_id).execute()
+            else:
+                # Insert new conversation row
+                res = supabase_admin.table("prediction_history").insert({
+                    "user_id": valid_user_id,
+                    "user_message": request.message,
+                    "agent_response": result["message"],
+                    "prediction_data": prediction_data_to_save
+                }).execute()
+                if res.data and len(res.data) > 0:
+                    inserted_id = res.data[0].get("id")
         except Exception as log_e:
             print(f"⚠️ Supabase logging failed: {log_e}")
 
         return PredictionResponse(
             status=result["status"],
             message=result["message"],
-            prediction_data=prediction_data
+            prediction_data=prediction_data,
+            prediction_id=inserted_id
         )
         
     except Exception as e:
@@ -143,4 +170,18 @@ async def get_prediction_history_route(user_id: str):
         return {"status": "success", "data": response.data}
     except Exception as e:
         print(f"❌ History fetch error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────
+# DELETE /api/predict/{prediction_id}
+# ─────────────────────────────────────────────
+@router.delete("/{prediction_id}")
+async def delete_prediction(prediction_id: int):
+    """Deletes a single prediction history entry."""
+    try:
+        supabase_admin.table("prediction_history").delete().eq("id", prediction_id).execute()
+        return {"status": "success"}
+    except Exception as e:
+        print(f"❌ Prediction delete error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
