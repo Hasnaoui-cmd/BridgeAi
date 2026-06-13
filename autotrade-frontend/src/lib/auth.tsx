@@ -32,7 +32,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const { data, error } = await supabase
         .from('user_profiles')
         .select('role')
-        .eq('id', userId)
+        .eq('auth_user_id', userId)
         .maybeSingle(); // maybeSingle is safer than .single()
 
       if (error) throw error;
