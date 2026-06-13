@@ -74,14 +74,30 @@ app.add_middleware(
 
 #function to get the real role of the person sending the message (admin or user)
 def get_user_role_from_id(user_id: str):
-    """Checks the user_profiles table to get the actual role."""
+    """Checks the user_profiles table to get the actual role.
+    user_id is the Supabase Auth ID (auth.users.id).
+    We look up profiles via auth_user_id (the bridge column).
+    """
     try:
-        res = supabase_admin.from_("user_profiles").select("role").eq("id", user_id).single().execute()
+        res = supabase_admin.from_("user_profiles").select("role").eq("auth_user_id", user_id).single().execute()
         if res.data:
             return res.data['role']
         return "user" # Default
     except:
         return "user"
+
+
+def resolve_profile_id(auth_user_id: str):
+    """Resolves a Supabase Auth user ID to the user_profiles.id.
+    Returns the profile ID string, or None if not found.
+    """
+    try:
+        res = supabase_admin.from_("user_profiles").select("id").eq("auth_user_id", auth_user_id).single().execute()
+        if res.data:
+            return res.data['id']
+        return None
+    except:
+        return None
 
 def save_message(session_id: str, role: str, content: str):
     """Saves a single message to Supabase chat_history table. Returns True on success, False on failure."""
@@ -506,12 +522,23 @@ async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is 
         print(f"📡 Request to delete user: {target_user_id} by admin: {admin_id}")
 
         # 1. Security check (Only if admin_id is provided)
+        # admin_id is a Supabase Auth ID — role lookup uses auth_user_id
         if admin_id:
             role = get_user_role_from_id(admin_id)
             if role != "admin":
                 return {"status": "error", "message": "Unauthorized: Admin access required."}
 
-        # 2. Delete from user_profiles table FIRST
+        # 2. Resolve the Auth user ID from the profile BEFORE deleting it
+        # target_user_id is a user_profiles.id (profile ID, not necessarily the Auth ID)
+        auth_id_to_delete = None
+        try:
+            profile_res = supabase_admin.from_("user_profiles").select("auth_user_id").eq("id", target_user_id).single().execute()
+            if profile_res.data:
+                auth_id_to_delete = profile_res.data.get("auth_user_id")
+        except Exception as e:
+            print(f"⚠️ Could not resolve auth_user_id: {e}")
+
+        # 3. Delete from user_profiles table
         # This clears your local data so the UI updates immediately
         try:
             supabase_admin.from_("user_profiles").delete().eq("id", target_user_id).execute()
@@ -519,15 +546,16 @@ async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is 
         except Exception as e:
             print(f"⚠️ Table delete warning: {e}")
 
-        # 3. Delete from Supabase Auth (The login account)
-        # We wrap this in another try/except so if the user is already gone from Auth,
-        # we still return "Success" to the frontend.
-        try:
-            supabase_admin.auth.admin.delete_user(target_user_id)
-            print("✅ Removed from Supabase Auth")
-        except Exception as auth_err:
-            # "User not found" usually happens here. We ignore it and stay successful.
-            print(f"ℹ️ Auth delete info (User might already be gone): {auth_err}")
+        # 4. Delete from Supabase Auth (The login account)
+        # Use the resolved auth_user_id, not the profile ID
+        if auth_id_to_delete:
+            try:
+                supabase_admin.auth.admin.delete_user(auth_id_to_delete)
+                print("✅ Removed from Supabase Auth")
+            except Exception as auth_err:
+                print(f"ℹ️ Auth delete info (User might already be gone): {auth_err}")
+        else:
+            print("⚠️ No auth_user_id found — skipping Auth deletion")
 
         return {"status": "success", "message": "User account and profile cleared."}
 
@@ -587,41 +615,6 @@ async def update_user_role(target_user_id: str, request: UpdateRoleRequest):
         return {"status": "success", "message": f"User role updated to {request.role}"}
     except Exception as e:
         print(f"❌ Role Update Error: {e}")
-        return {"status": "error", "message": str(e)}
-
-@app.delete("/admin/users/{target_user_id}")
-async def delete_user(target_user_id: str, admin_id: str = None): # admin_id is optional for safety
-    try:
-        print(f"📡 Request to delete user: {target_user_id} by admin: {admin_id}")
-
-        # 1. Security check (Only if admin_id is provided)
-        if admin_id:
-            role = get_user_role_from_id(admin_id)
-            if role != "admin":
-                return {"status": "error", "message": "Unauthorized: Admin access required."}
-
-        # 2. Delete from user_profiles table FIRST
-        # This clears your local data so the UI updates immediately
-        try:
-            supabase_admin.from_("user_profiles").delete().eq("id", target_user_id).execute()
-            print("✅ Removed from user_profiles table")
-        except Exception as e:
-            print(f"⚠️ Table delete warning: {e}")
-
-        # 3. Delete from Supabase Auth (The login account)
-        # We wrap this in another try/except so if the user is already gone from Auth,
-        # we still return "Success" to the frontend.
-        try:
-            supabase_admin.auth.admin.delete_user(target_user_id)
-            print("✅ Removed from Supabase Auth")
-        except Exception as auth_err:
-            # "User not found" usually happens here. We ignore it and stay successful.
-            print(f"ℹ️ Auth delete info (User might already be gone): {auth_err}")
-
-        return {"status": "success", "message": "User account and profile cleared."}
-
-    except Exception as e:
-        print(f"❌ Critical Delete Error: {e}")
         return {"status": "error", "message": str(e)}
 @app.post("/chat/documents")
 async def chat_with_multiple_documents(
@@ -720,8 +713,11 @@ User question: {question}{truncated_warning}"""
                 status = "High Risk" if any(w in full_ai_answer.lower() for w in risk_keywords) else "Low Risk"
                 
                 try:
+                    # compliance_screenings.user_id references user_profiles.id
+                    # user_id here is the Auth ID, so resolve to profile ID first
+                    profile_id = resolve_profile_id(user_id)
                     supabase_admin.from_("compliance_screenings").insert({
-                        "user_id": user_id,
+                        "user_id": profile_id,
                         "session_id": session_id,
                         "screening_type": f"Multi-Doc Audit ({len(files)} files)",
                         "status": status,

@@ -9,6 +9,7 @@ type Tab = 'users' | 'knowledge';
 
 interface UserProfile {
   id: string;
+  auth_user_id: string | null;
   full_name: string | null;
   email: string | null;
   role: string;
@@ -158,7 +159,7 @@ function UsersTab() {
   };
 
   const handleDeleteUser = (targetUser: UserProfile) => {
-    if (!currentUser || targetUser.id === currentUser.id) return;
+    if (!currentUser || targetUser.auth_user_id === currentUser.id) return;
     setUserToProcess(targetUser);
     setIsDeleteModalOpen(true);
   };
@@ -245,7 +246,7 @@ function UsersTab() {
                     <select
                       value={user.role || 'user'}
                       onChange={(e) => handleRoleChange(user.id, e.target.value)}
-                      disabled={user.id === currentUser?.id || processingId === user.id}
+                      disabled={user.auth_user_id === currentUser?.id || processingId === user.id}
                       className={`text-xs font-semibold rounded-lg px-2 py-1.5 focus:outline-none focus:ring-2 focus:ring-amber-500/20 disabled:opacity-50 transition-colors cursor-pointer ${
                         user.role === 'admin'
                           ? 'bg-amber-100 text-amber-700 border border-amber-200 hover:bg-amber-200'
@@ -268,13 +269,13 @@ function UsersTab() {
                 <td className="px-6 py-4 text-right">
                   <button
                     onClick={() => handleDeleteUser(user)}
-                    disabled={user.id === currentUser?.id || processingId === user.id}
+                    disabled={user.auth_user_id === currentUser?.id || processingId === user.id}
                     className={`p-2 rounded-lg transition-colors ${
-                      user.id === currentUser?.id
+                      user.auth_user_id === currentUser?.id
                         ? 'text-stone-300 cursor-not-allowed'
                         : 'text-stone-400 hover:text-red-600 hover:bg-red-50'
                     }`}
-                    title={user.id === currentUser?.id ? "Cannot delete yourself" : "Delete user"}
+                    title={user.auth_user_id === currentUser?.id ? "Cannot delete yourself" : "Delete user"}
                   >
                     <Trash2 size={16} />
                   </button>
